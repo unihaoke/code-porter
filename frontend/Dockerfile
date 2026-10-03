@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
 # ---- 1. 构建前端产物 ----
-FROM node:22-alpine AS builder
+# 注意：必须用 glibc 基础镜像（node:22-slim），不能用 node:22-alpine。
+# node:22-alpine 基于 musl libc，而 vite/esbuild 的预编译二进制是 glibc 的，
+# 在 alpine 上 esbuild 的工具链无法正常工作，会导致 npm ci 后 vite 不可用 / 缺失 -> 构建 127。
+FROM node:22-slim AS builder
 
 ENV NODE_ENV=production
 

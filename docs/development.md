@@ -3,7 +3,7 @@
 ## 环境要求
 
 - Go 1.23+
-- Node.js **20.19+**（前端构建工具 Vite 6 的硬性要求；Docker 构建用 `node:22-alpine`）
+- Node.js **20.19+**（前端构建工具 Vite 6 的硬性要求；Docker 构建用 `node:22-slim`，注意不能用 `node:22-alpine`，否则 esbuild 工具链在 musl 下异常导致构建 127）
 - Docker（可选，仅部署时需要）
 
 ## 初始化
