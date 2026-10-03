@@ -21,14 +21,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" \
 FROM node:22-slim AS web-builder
 
 WORKDIR /web
-# 强制按 Linux/x64 解析平台相关可选依赖（如 esbuild 预编译二进制），
-# 避免 lock 在 Windows/macOS 上生成时把 win32/darwin 二进制当硬依赖 -> EBADPLATFORM。
-ENV npm_config_os=linux
-ENV npm_config_cpu=x64
-# 依赖锁定文件必须随仓库提交；npm ci 从 lock 精确重建，
-# 若 package.json 与 lock 不一致会直接报错（而不是悄悄装出坏 node_modules）。
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+# 用 npm install 而非 npm ci：对 lock 与 package.json 的微小漂移更宽容，
+# 能从 package.json 稳定拉到 vite；registry 显式指向 npmmirror，与 lock 中
+# resolved 域名一致，避免构建环境网络差异导致依赖装不全。
+# 装完立即校验 vite 二进制是否存在，缺失则直接失败（而不是静默漏装、
+# 等到 npm run build 才报 127 让人摸不着头脑）。
+RUN npm install --no-audit --no-fund --registry=https://registry.npmmirror.com \
+ && test -x node_modules/.bin/vite || (echo "ERROR: vite binary missing after npm install"; exit 1)
 
 COPY frontend/ .
 RUN npm run build
