@@ -25,9 +25,9 @@ services:
       # 机器人配置持久化（bots.json）
       - gateway-data:/app/data
     expose:
-      - "8080"
+      - "9022"
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9022/healthz"]
       interval: 30s
       timeout: 5s
       start_period: 10s
