@@ -7,8 +7,9 @@ ENV NODE_ENV=production
 
 WORKDIR /web
 # 强制按 Linux/x64 解析平台相关可选依赖（如 esbuild 预编译二进制），
-# 防止 lock 在 Windows/macOS 上生成时把 win32/darwin 二进制当硬依赖 → EBADPLATFORM。
-ENV npm_config_os=linux npm_config_cpu=x64
+# 防止 lock 在 Windows/macOS 上生成时把 win32/darwin 二进制当硬依赖 -> EBADPLATFORM。
+ENV npm_config_os=linux
+ENV npm_config_cpu=x64
 # 依赖锁定文件必须随仓库提交；npm ci 从 lock 精确重建，lock 缺失或与
 # package.json 不一致会直接报错，避免静默装出坏 node_modules 导致后续 127。
 COPY package.json package-lock.json ./

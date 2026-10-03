@@ -20,8 +20,9 @@ FROM node:22-alpine AS web-builder
 
 WORKDIR /web
 # 强制按 Linux/x64 解析平台相关可选依赖（如 esbuild 预编译二进制），
-# 避免 lock 在 Windows/macOS 上生成时把 win32/darwin 二进制当硬依赖 → EBADPLATFORM。
-ENV npm_config_os=linux npm_config_cpu=x64
+# 避免 lock 在 Windows/macOS 上生成时把 win32/darwin 二进制当硬依赖 -> EBADPLATFORM。
+ENV npm_config_os=linux
+ENV npm_config_cpu=x64
 # 依赖锁定文件必须随仓库提交；npm ci 从 lock 精确重建，
 # 若 package.json 与 lock 不一致会直接报错（而不是悄悄装出坏 node_modules）。
 COPY frontend/package.json frontend/package-lock.json ./
