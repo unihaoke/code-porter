@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # ---- 1. 构建前端产物 ----
-# 注意：必须用 glibc 基础镜像（node:22-slim），不能用 node:22-alpine。
-# node:22-alpine 基于 musl libc，而 vite/esbuild 的预编译二进制是 glibc 的，
-# 在 alpine 上 esbuild 的工具链无法正常工作，会导致 npm ci 后 vite 不可用 / 缺失 -> 构建 127。
+# 构建阶段必须用 glibc 镜像（node:22-slim），不能用 node:22-alpine
+# （alpine 的 musl libc 与 vite/esbuild 的 glibc 预编译二进制不兼容）。
+# 关键：本阶段需要 devDependencies（vite / plugin-vue / vue-tsc 等）来构建，
+# 因此【绝不能】设置 NODE_ENV=production —— 否则 npm install 会跳过 devDependencies，
+# 导致 vite 不装、build 阶段直接 127。最终 nginx 运行阶段不跑 node，无需该变量。
 FROM node:22-slim AS builder
-
-ENV NODE_ENV=production
 
 WORKDIR /web
 COPY package.json package-lock.json ./
@@ -15,7 +15,7 @@ COPY package.json package-lock.json ./
 # resolved 域名一致，避免构建环境网络差异导致依赖装不全。
 # 装完立即校验 vite 二进制是否存在，缺失则直接失败（而不是静默漏装、
 # 等到 npm run build 才报 127 让人摸不着头脑）。
-RUN npm install --no-audit --no-fund --registry=https://registry.npmmirror.com \
+RUN npm install --include=dev --no-audit --no-fund --registry=https://registry.npmmirror.com \
  && test -x node_modules/.bin/vite || (echo "ERROR: vite binary missing after npm install"; exit 1)
 
 COPY . .

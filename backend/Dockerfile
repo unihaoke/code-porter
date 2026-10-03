@@ -27,7 +27,7 @@ COPY frontend/package.json frontend/package-lock.json ./
 # resolved 域名一致，避免构建环境网络差异导致依赖装不全。
 # 装完立即校验 vite 二进制是否存在，缺失则直接失败（而不是静默漏装、
 # 等到 npm run build 才报 127 让人摸不着头脑）。
-RUN npm install --no-audit --no-fund --registry=https://registry.npmmirror.com \
+RUN npm install --include=dev --no-audit --no-fund --registry=https://registry.npmmirror.com \
  && test -x node_modules/.bin/vite || (echo "ERROR: vite binary missing after npm install"; exit 1)
 
 COPY frontend/ .
