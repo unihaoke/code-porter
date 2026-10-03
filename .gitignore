@@ -1,0 +1,28 @@
+# 构建产物
+/bin/
+/dist/
+backend/bin/
+backend/web/
+frontend/dist/
+frontend/node_modules/
+
+# 本地数据与敏感配置
+data/
+.env
+*.local.yaml
+
+# 测试与覆盖率
+*.test
+*.out
+coverage.txt
+
+# 编辑器和系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 临时目录
+.smoke/
+.verify/
+tmp/

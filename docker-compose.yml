@@ -1,0 +1,63 @@
+# CodePorter — 公网 VPS 一键部署
+#
+# 用法：
+#   cp .env.example .env && 编辑 .env
+#   docker compose up -d --build
+#   docker compose logs -f gateway
+#
+# 两个服务：
+#   gateway — Go 网关（OpenAI 兼容接口、任务调度、IM 机器人回调）
+#   web     — Nginx（托管 Vue 控制台，并把 /api /v1 /agent /webhook 反代到 gateway）
+
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: codeporter/gateway:0.2.0
+    container_name: codeporter-gateway
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      # 网关配置（只读挂载，改完 restart 生效）
+      - ./backend/configs/gateway.yaml:/app/configs/gateway.yaml:ro
+      # 机器人配置持久化（bots.json）
+      - gateway-data:/app/data
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: codeporter/web:0.2.0
+    container_name: codeporter-web
+    restart: unless-stopped
+    depends_on:
+      gateway:
+        condition: service_healthy
+    ports:
+      # 生产环境请在前置 Nginx / Caddy 上终止 HTTPS，再把 80 转发进来
+      - "${WEB_PORT:-80}:80"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  gateway-data:

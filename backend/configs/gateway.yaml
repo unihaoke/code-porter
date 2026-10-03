@@ -1,0 +1,62 @@
+# CodePorter Gateway 配置
+server:
+  addr: ":8080"
+  read_timeout: 30s
+  write_timeout: 10m      # SSE 长连接需要较大的写超时
+  idle_timeout: 2m
+  shutdown_timeout: 20s
+  # 网关对外可访问地址，用于生成机器人回调 URL 提示（不影响监听）
+  public_addr: "http://127.0.0.1:8080"
+
+security:
+  # 对外调用的 API Key（建议至少配置一个）
+  api_keys:
+    - "sk-codeporter-demo-key"
+  # 本地 Agent 的鉴权令牌
+  agent_tokens:
+    - "change-me-agent-token"
+  # 网页管理端令牌；留空则回落到第一个 api_key
+  admin_token: "change-me-admin-token"
+
+# 网页控制台（frontend 构建产物托管）
+web:
+  enabled: true
+  static_dir: "web/dist"
+
+# IM 机器人（飞书 / 企业微信）
+bot:
+  store_file: "data/bots.json"   # 机器人配置持久化文件（容器内已挂载卷）
+  default_model: "claude-code"
+  reply_timeout: 10m
+
+task:
+  max_retry: 2             # 失败重试次数，超过进入死信队列
+  lock_timeout: 60s        # 单次执行的任务锁时长，超时自动回收
+  ttl: 10m                 # 任务整体存活时长
+  queue_max_len: 512       # 单 Agent 私有队列最大长度，满则返回 429
+  request_timeout: 5m      # 非流式请求最长等待时间
+  stream_idle_timeout: 2m  # 流式连接最长空闲时间
+  mcp_timeout: 3m          # 下发给 Agent 的本地 MCP 调用超时
+  log_prompt: false        # 是否记录完整 prompt（默认关闭，避免源码外泄）
+
+rate_limit:
+  qps: 10                  # 单 API Key 每秒请求数，0 表示不限
+  burst: 20
+  max_inflight: 512        # 网关全局最大在途请求数
+
+lifecycle:
+  lock_sweep_interval: 5s
+  ttl_sweep_interval: 30s
+  heartbeat_sweep_interval: 10s
+  retention_interval: 5m
+  task_retention: 30m
+  agent_heartbeat_timeout: 30s
+
+# MVP 单用户单 Agent：一个网关绑定一台本地 PC
+agent:
+  id: "local-pc"
+  name: "My PC"
+  token: "change-me-agent-token"
+
+log:
+  level: info
