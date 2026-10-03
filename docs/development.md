@@ -3,7 +3,7 @@
 ## 环境要求
 
 - Go 1.23+
-- Node.js 20+（前端构建）
+- Node.js **20.19+**（前端构建工具 Vite 6 的硬性要求；Docker 构建用 `node:22-alpine`）
 - Docker（可选，仅部署时需要）
 
 ## 初始化
@@ -125,8 +125,25 @@ dist/*.zip|*.tar.gz  各平台客户端（含二进制 + 示例配置 + 快速�
 
 ## 常见问题
 
-**`npm install` 报 `@esbuild/win32-x64 could not be found`**
-执行 `npm install --include=optional @esbuild/win32-x64@<esbuild 版本>`（版本见 `node_modules/esbuild/package.json`）。
+**`npm install` 后报 `@esbuild/<platform> could not be found`**
+这是 npm 跳过了 esbuild 的平台可选依赖（或 install 脚本被拦截）。
+用 `--no-save` 补装，**不要**写进 `package.json` —— 平台包写进 dependencies 会让 Linux 构建报 `EBADPLATFORM`：
+
+```bash
+# 版本号取 node_modules/esbuild/package.json 中的 version
+npm install --no-save --include=optional @esbuild/win32-x64@0.25.12
+```
+
+**依赖漏洞扫描**
+
+```bash
+npm audit --registry=https://registry.npmjs.org   # 国内镜像源不支持 audit，需指定官方源
+```
+
+前端构建依赖固定在 `vite@^6.4.3`：该版本修掉了
+`CVE-2026-53632`（launch-editor NTLMv2 泄露）、`CVE-2026-53571`（`server.fs.deny` 绕过）
+与 `CVE-2026-39365`（`.map` 路径穿越）等 dev server 漏洞，
+**不要降回 5.x**——5.4.x 分支没有对应补丁。
 
 **改了前端但页面没变化**
 执行 `make build-frontend && make web`，并确认 `gateway.yaml` 的 `web.static_dir` 指向 `web/dist`。

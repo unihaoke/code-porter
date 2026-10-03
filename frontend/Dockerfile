@@ -3,9 +3,11 @@
 # ---- 1. 构建前端产物 ----
 FROM node:22-alpine AS builder
 
+ENV NODE_ENV=production
+
 WORKDIR /web
-COPY package.json ./
-COPY package-lock.json* ./
+# 用 package*.json glob：仓库没提交 lock 时也不会 COPY 失败
+COPY package*.json ./
 RUN npm install --no-audit --no-fund
 
 COPY . .
@@ -17,7 +19,6 @@ FROM nginx:1.27-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /web/dist /usr/share/nginx/html
 
-# nginx 官方镜像以 101 运行，静态目录保持可读即可
 RUN chmod -R a+rX /usr/share/nginx/html
 
 EXPOSE 80

@@ -1,0 +1,8 @@
+# 前端镜像的构建上下文只需要源码
+node_modules/
+dist/
+.git/
+.gitignore
+*.md
+.env
+.env.*

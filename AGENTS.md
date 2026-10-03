@@ -85,6 +85,10 @@ make docker-up        # docker compose 一键部署
 - 本机 curl 访问 `127.0.0.1` 可能被沙箱代理拦截返回 502，用 `curl --noproxy '*'` 或 Python
   `urllib.request.build_opener(urllib.request.ProxyHandler({}))`。
 - Git Bash 的 `/tmp` 与 Windows Python 看到的 `/tmp` 不是同一个目录，跨工具传文件用工作区内相对路径。
-- 前端 `npm install` 后若报 `@esbuild/win32-x64 could not be found`，
-  执行 `npm install --include=optional @esbuild/win32-x64@<esbuild 版本>`。
+- 前端固定 `vite@^6.4.3`（修掉 CVE-2026-53632 / CVE-2026-53571 / CVE-2026-39365 等 dev server 漏洞），
+  **不要降到 5.x**，且要求 Node 20.19+。
+- 前端 `npm install` 后若报 `@esbuild/<platform> could not be found`，
+  执行 `npm install --no-save --include=optional @esbuild/win32-x64@<esbuild 版本>`。
+  **平台包绝不能写进 `package.json` 的 dependencies** —— 否则 Linux 构建会报 `EBADPLATFORM`。
+- `npm audit` 必须用官方源：`npm audit --registry=https://registry.npmjs.org`（国内镜像源不支持该端点）。
 - 构建容器镜像必须 `CGO_ENABLED=0`（alpine 运行阶段没有 libc）。

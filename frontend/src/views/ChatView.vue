@@ -144,7 +144,7 @@ onMounted(loadModels)
         <div v-if="!messages.length" class="empty">
           还没有消息。试试输入「帮我审查这段代码的性能问题」。
         </div>
-        <div v-for="(m, i) in messages" :key="i" class="bubble-row" :class="m.role">
+        <div v-for="(m, i) in messages" :key="i" class="bubble-row" :class="{ user: m.role === 'user' }">
           <div class="bubble" :class="{ error: m.error }">
             <div class="who">{{ m.role === 'user' ? '我' : '本地 AI' }}</div>
             <div v-if="m.role === 'user'" class="text">{{ m.content }}</div>

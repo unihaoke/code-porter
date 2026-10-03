@@ -1,0 +1,21 @@
+# 减小 gateway 镜像的构建上下文（context 是仓库根目录）
+.git/
+.github/
+.workbuddy/
+
+# 发布产物与文档不需要进镜像
+dist/
+docs/
+*.md
+
+# 前端依赖与构建产物：容器里会重新 npm install + build
+frontend/node_modules/
+frontend/dist/
+
+# 其他噪音
+**/node_modules/
+**/.smoke/
+**/bin/
+backend/web/
+.env
+.env.*
