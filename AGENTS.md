@@ -52,7 +52,7 @@ code-porter/
 make build            # 构建后端 + 前端，产物落到 backend/web/dist
 make test             # 后端单测与集成测试
 make vet fmt          # 静态检查与格式化
-make run-gateway      # 启动网关（:8080，同时托管控制台）
+make run-gateway      # 启动网关（:9022，同时托管控制台）
 make dev-web          # 前端开发服务器（:5173，代理 /api 到网关）
 make release          # 交叉编译客户端 → dist/（含下载页）
 make docker-up        # docker compose 一键部署

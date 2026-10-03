@@ -106,13 +106,13 @@ make run-agent
 
 ```bash
 make init           # 整理 Go 依赖 + 安装前端依赖
-make run-gateway    # 网关 :8080（同时托管控制台，需先执行 make web）
+make run-gateway    # 网关 :9022（同时托管控制台，需先执行 make web）
 make dev-web        # 前端热更新 :5173，/api 代理到网关
 make test           # 后端测试
 ```
 
 前端产物由网关托管（`web.static_dir` 默认 `web/dist`），
-改完前端执行 `make build-frontend && make web` 再访问 `:8080`。
+改完前端执行 `make build-frontend && make web` 再访问 `:9022`。
 
 ---
 

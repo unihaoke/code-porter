@@ -56,7 +56,7 @@ typecheck: ## 前端类型检查
 
 # ---------------- 运行 ----------------
 
-run-gateway: ## 启动网关（默认 :8080，同时托管网页控制台）
+run-gateway: ## 启动网关（默认 :9022，同时托管网页控制台）
 	cd $(BACKEND) && $(GO) run ./cmd/gateway -config configs/gateway.yaml
 
 run-agent: ## 启动本地 Agent

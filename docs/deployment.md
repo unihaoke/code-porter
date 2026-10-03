@@ -51,7 +51,7 @@ docker compose logs -f gateway
 
 | 容器 | 作用 | 端口 |
 |---|---|---|
-| `codeporter-gateway` | Go 网关，任务调度与 IM 回调 | 8080（仅容器网络内） |
+| `codeporter-gateway` | Go 网关，任务调度与 IM 回调 | 9022（仅容器网络内） |
 | `codeporter-web` | Nginx，托管 Vue 控制台并反代 API | 映射到宿主 `${WEB_PORT:-80}` |
 
 浏览器打开 `http://<服务器IP>` → 用 `admin_token` 登录。
@@ -59,7 +59,7 @@ docker compose logs -f gateway
 ### 防火墙
 
 只需放行网页端口（默认 80，或你改过的 `WEB_PORT`）。
-**不要**额外开放 8080 —— 网关只对容器内的 Nginx 暴露。
+**不要**额外开放 9022 —— 网关只对容器内的 Nginx 暴露。
 
 ---
 
@@ -173,6 +173,6 @@ WantedBy=default.target
 查看网关自身健康：
 
 ```bash
-docker compose exec gateway wget -qO- http://127.0.0.1:8080/healthz
+docker compose exec gateway wget -qO- http://127.0.0.1:9022/healthz
 curl https://cp.example.com/healthz
 ```

@@ -34,7 +34,7 @@ type GatewayConfig struct {
 
 // ServerConfig HTTP 服务配置。
 type ServerConfig struct {
-	// Addr 监听地址，如 :8080。
+	// Addr 监听地址，如 :9022。
 	Addr string `yaml:"addr"`
 	// ReadTimeout 读超时；SSE 长连接需要较大的写超时。
 	ReadTimeout time.Duration `yaml:"read_timeout"`
@@ -149,7 +149,7 @@ func LoadGateway(path string) (*GatewayConfig, error) {
 func defaultGatewayConfig() *GatewayConfig {
 	return &GatewayConfig{
 		Server: ServerConfig{
-			Addr:            ":8080",
+			Addr:            ":9022",
 			ReadTimeout:     30 * time.Second,
 			WriteTimeout:    10 * time.Minute, // SSE 长连接
 			IdleTimeout:     2 * time.Minute,
@@ -274,7 +274,7 @@ func LoadAgent(path string) (*AgentConfig, error) {
 func defaultAgentConfig() *AgentConfig {
 	return &AgentConfig{
 		Agent:   AgentIdentity{ID: "local-pc", Token: "change-me-agent-token"},
-		Gateway: GatewayEndpoint{Addr: "http://127.0.0.1:8080", Timeout: 30 * time.Second},
+		Gateway: GatewayEndpoint{Addr: "http://127.0.0.1:9022", Timeout: 30 * time.Second},
 		Pull: PullConfig{
 			IntervalMin:   500 * time.Millisecond,
 			IntervalMax:   3 * time.Second,

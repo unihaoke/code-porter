@@ -49,10 +49,10 @@ COPY backend/configs/gateway.yaml /app/configs/gateway.yaml
 RUN mkdir -p /app/data && chown -R codeporter:codeporter /app
 
 USER codeporter
-EXPOSE 8080
+EXPOSE 9022
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+  CMD wget -qO- http://127.0.0.1:9022/healthz || exit 1
 
 ENTRYPOINT ["/app/codeporter-gateway"]
 CMD ["-config", "/app/configs/gateway.yaml"]

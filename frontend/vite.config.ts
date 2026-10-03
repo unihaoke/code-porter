@@ -2,8 +2,8 @@ import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// 开发态直连本机的 codeporter-gateway（默认 :8080）。
-const GATEWAY = process.env.VITE_GATEWAY_TARGET ?? 'http://127.0.0.1:8080'
+// 开发态直连本机的 codeporter-gateway（默认 :9022）。
+const GATEWAY = process.env.VITE_GATEWAY_TARGET ?? 'http://127.0.0.1:9022'
 
 export default defineConfig({
   plugins: [vue()],

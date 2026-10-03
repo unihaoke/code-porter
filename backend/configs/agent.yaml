@@ -4,7 +4,7 @@ agent:
   token: "change-me-agent-token" # 需与网关侧 agent.token 一致
 
 gateway:
-  addr: "http://127.0.0.1:8080"  # 生产环境请用 https://your-domain
+  addr: "http://127.0.0.1:9022"  # 生产环境请用 https://your-domain
   timeout: 30s
   insecure_tls: false            # 自签证书场景可临时置 true
 

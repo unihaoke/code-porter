@@ -17,13 +17,13 @@ make init          # go mod tidy + npm install
 ```bash
 # 后端
 make build-backend       # 编译 gateway 与 agent 到 backend/bin/
-make run-gateway         # 运行网关（:8080，同时托管控制台）
+make run-gateway         # 运行网关（:9022，同时托管控制台）
 make run-agent           # 运行本地 Agent
 make test                # go test ./...
 make vet fmt             # 静态检查 + 格式化
 
 # 前端
-make dev-web             # Vite 开发服务器 :5173（/api 代理到 :8080）
+make dev-web             # Vite 开发服务器 :5173（/api 代理到 :9022）
 make build-frontend      # 构建到 frontend/dist
 make web                 # 复制 frontend/dist → backend/web/dist（网关托管目录）
 make typecheck           # vue-tsc 类型检查
@@ -42,12 +42,12 @@ make docker-up / docker-down / docker-logs
 
 ```bash
 make build-frontend && make web     # 首次或改完前端后执行
-make run-gateway                    # 终端 1：http://127.0.0.1:8080
+make run-gateway                    # 终端 1：http://127.0.0.1:9022
 make run-agent                      # 终端 2：连上网关
 make dev-web                        # 终端 3：http://127.0.0.1:5173（热更新）
 ```
 
-前端开发服务器会把 `/api`、`/v1`、`/webhook`、`/healthz` 代理到 `http://127.0.0.1:8080`，
+前端开发服务器会把 `/api`、`/v1`、`/webhook`、`/healthz` 代理到 `http://127.0.0.1:9022`，
 改后端无需重启前端。
 
 ## 目录与分层约定
@@ -86,16 +86,16 @@ go build -o .smoke/gw.exe ./cmd/gateway
 mkdir -p .smoke && ./.smoke/gw.exe -config configs/gateway.yaml &
 
 # 控制台登录
-curl --noproxy '*' -X POST http://127.0.0.1:8080/api/auth/login \
+curl --noproxy '*' -X POST http://127.0.0.1:9022/api/auth/login \
   -H 'X-Admin-Token: change-me-admin-token'
 
 # 创建一个飞书机器人
-curl --noproxy '*' -X POST http://127.0.0.1:8080/api/bots \
+curl --noproxy '*' -X POST http://127.0.0.1:9022/api/bots \
   -H 'X-Admin-Token: change-me-admin-token' -H 'Content-Type: application/json' \
   -d '{"name":"测试","channel":"feishu","webhook_url":"https://open.feishu.cn/open-apis/bot/v2/hook/demo"}'
 
 # 模拟飞书的 URL 验证
-curl --noproxy '*' -X POST http://127.0.0.1:8080/webhook/feishu/<bot_id> \
+curl --noproxy '*' -X POST http://127.0.0.1:9022/webhook/feishu/<bot_id> \
   -H 'Content-Type: application/json' -d '{"type":"url_verification","challenge":"ping"}'
 ```
 

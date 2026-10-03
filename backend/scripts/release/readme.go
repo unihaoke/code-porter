@@ -100,7 +100,7 @@ WebSocket 直连两条通路把任务下发到开发机上的 LocalAgent。
 编辑 `+"`gateway.yaml`"+`，至少替换以下占位值：
 
 `+fence("yaml", `server:
-  addr: ":8080"
+  addr: ":9022"
 
 auth:
   api_keys:
@@ -116,7 +116,7 @@ agents:
 
 ## 4. 健康检查
 
-`+fence(lang, "curl http://127.0.0.1:8080/healthz")+`
+`+fence(lang, "curl http://127.0.0.1:9022/healthz")+`
 
 ## 5. 验证版本
 
