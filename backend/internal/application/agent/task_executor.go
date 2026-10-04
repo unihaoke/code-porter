@@ -122,6 +122,14 @@ func (e *TaskExecutor) ExecuteWith(ctx context.Context, d port.TaskDispatch, rep
 		return err
 	}
 
+	// 权限缺省（旧网关/残留任务）按 all 兼容；显式非法值 fail-closed，直接拒绝执行。
+	perm, permOK := task.ParsePermission(d.Permission)
+	if !permOK {
+		err = apperr.New(apperr.CodeInvalidParam, "invalid task permission: "+d.Permission)
+		_ = reporter.ReportFailure(ctx, d.TaskID, d.LockToken, err.Error())
+		return err
+	}
+
 	runner, rerr := e.registry.Get(m)
 	if rerr != nil {
 		err = rerr
@@ -139,6 +147,7 @@ func (e *TaskExecutor) ExecuteWith(ctx context.Context, d port.TaskDispatch, rep
 		WorkDir:     d.WorkDir,
 		Temperature: d.Temperature,
 		MaxTokens:   d.MaxTokens,
+		Permission:  perm,
 	})
 	if serr != nil {
 		err = serr

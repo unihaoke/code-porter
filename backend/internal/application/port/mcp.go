@@ -28,6 +28,8 @@ type MCPStreamRequest struct {
 	WorkDir     string
 	Temperature *float64
 	MaxTokens   int
+	// Permission 本地文件操作权限上限，适配器必须据此收紧 CLI 沙箱/权限模式。
+	Permission task.Permission
 }
 
 // MCPRunner 单个本地 AI 工具的 MCP 适配器（PRD 5.3 核心扩展点）。

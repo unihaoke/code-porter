@@ -12,12 +12,12 @@ const dummyHash64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 
 func baseSpec(now time.Time) Spec {
 	return Spec{
-		UserID:   user.ID("usr_alice"),
-		Name:     "my laptop",
-		Scopes:   AllScopes,
-		KeyHash:  dummyHash64,
-		Prefix:   "cp_abcd1234",
-		Now:      now,
+		UserID:  user.ID("usr_alice"),
+		Name:    "my laptop",
+		Scopes:  AllScopes,
+		KeyHash: dummyHash64,
+		Prefix:  "cp_abcd1234",
+		Now:     now,
 	}
 }
 
@@ -198,8 +198,53 @@ func TestCloneIsolation(t *testing.T) {
 
 	// 修改副本的过期时间指针不影响原对象。
 	cpTime := cp.ExpiresAt().Add(48 * time.Hour)
-	cp.Rewrite(cp.ID(), cp.OwnerID(), cp.Name(), cp.Scopes(), cp.KeyHash(), cp.Prefix(), &cpTime, cp.LastUsedAt(), cp.CreatedAt(), cp.UpdatedAt())
+	cp.Rewrite(cp.ID(), cp.OwnerID(), cp.Name(), cp.Scopes(), cp.Permission(), cp.KeyHash(), cp.Prefix(), &cpTime, cp.LastUsedAt(), cp.CreatedAt(), cp.UpdatedAt())
 	if k.ExpiresAt().Equal(cpTime) {
 		t.Fatalf("clone expiry pointer mutation leaked")
 	}
+}
+
+func TestKeyPermission(t *testing.T) {
+	now := time.Now()
+
+	t.Run("default all when omitted", func(t *testing.T) {
+		k, err := NewKey(baseSpec(now))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if k.Permission() != PermissionAll {
+			t.Fatalf("default permission = %q, want all", k.Permission())
+		}
+	})
+
+	t.Run("explicit read/write kept", func(t *testing.T) {
+		for _, p := range []Permission{PermissionRead, PermissionWrite, PermissionAll} {
+			s := baseSpec(now)
+			s.Permission = p
+			k, err := NewKey(s)
+			if err != nil {
+				t.Fatalf("permission %s: %v", p, err)
+			}
+			if k.Permission() != p {
+				t.Fatalf("permission = %q, want %q", k.Permission(), p)
+			}
+		}
+	})
+
+	t.Run("invalid rejected", func(t *testing.T) {
+		s := baseSpec(now)
+		s.Permission = Permission("root")
+		if _, err := NewKey(s); err != ErrInvalidPermission {
+			t.Fatalf("want ErrInvalidPermission, got %v", err)
+		}
+	})
+
+	t.Run("empty value from storage treated as all", func(t *testing.T) {
+		k := &APIKey{}
+		k.Rewrite(ID("key_x"), user.SeedAdminID, "n", AllScopes, Permission(""),
+			dummyHash64, "cp_abcd1234", nil, time.Time{}, now, now)
+		if k.Permission() != PermissionAll {
+			t.Fatalf("empty stored permission = %q, want all", k.Permission())
+		}
+	})
 }

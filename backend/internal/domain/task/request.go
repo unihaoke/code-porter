@@ -30,6 +30,16 @@ type Request struct {
 	Temperature *float64 `json:"temperature,omitempty"`
 	// MaxTokens 最大输出长度。
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// Permission 本地文件操作权限上限（read/write/all），在 Agent 侧强制。
+	// 零值经 Normalize 后为 all。
+	Permission Permission `json:"permission,omitempty"`
+}
+
+// Normalize 补全请求的默认值：权限缺省为 all。
+func (r *Request) Normalize() {
+	if r.Permission == "" {
+		r.Permission = PermissionAll
+	}
 }
 
 // FlattenPrompt 当 Prompt 为空时，用 Messages 拼接出提示词。

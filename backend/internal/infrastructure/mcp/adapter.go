@@ -84,6 +84,12 @@ func (a *Adapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (<-c
 		return nil, apperr.New(apperr.CodeMCPFailure,
 			"adapter for "+a.model.String()+" is disabled, please enable it in config")
 	}
+	// MCP stdio 协议没有沙箱参数：read/write 只能靠提示词守卫软约束，
+	// 显式告警提醒运维把需要强隔离的工具切换为 mode=cli。
+	if req.Permission == task.PermissionRead || req.Permission == task.PermissionWrite {
+		a.log.Warn("permission is enforced only by prompt guard in mcp mode; use mode=cli for hard sandbox",
+			port.F("model", a.model.String()), port.F("permission", req.Permission.String()))
+	}
 	client, err := a.ensureClient(ctx)
 	if err != nil {
 		return nil, err
@@ -272,19 +278,49 @@ func buildPrompt(req port.MCPStreamRequest) string {
 		}
 		prompt = strings.TrimSpace(sb.String())
 	}
+	var head string
 	switch req.Operation {
 	case task.OperationGenerate:
-		return "请生成以下代码需求的实现：\n" + prompt
+		head = "请生成以下代码需求的实现：\n"
 	case task.OperationRefactor:
-		return "请重构以下代码并说明改动点：\n" + prompt
+		head = "请重构以下代码并说明改动点：\n"
 	case task.OperationDebug:
-		return "请分析以下代码的问题并给出修复方案：\n" + prompt
+		head = "请分析以下代码的问题并给出修复方案：\n"
 	case task.OperationExplain:
-		return "请解释以下代码：\n" + prompt
+		head = "请解释以下代码：\n"
 	case task.OperationReview:
-		return "请对以下代码做一次评审，指出风险与改进项：\n" + prompt
+		head = "请对以下代码做一次评审，指出风险与改进项：\n"
+	}
+	// 权限守卫必须置于提示词最前面，覆盖用户后续任何相反指令。
+	if guard := permissionGuardText(req.Permission); guard != "" {
+		if head != "" {
+			return guard + "\n\n" + head + prompt
+		}
+		return guard + "\n\n" + prompt
+	}
+	return head + prompt
+}
+
+// permissionGuardText 返回权限约束文本（注入提示词头部）。
+//
+// 这是所有模式共享的兜底层：CLI 模式另有沙箱/权限模式参数做硬强制；
+// MCP stdio 模式协议本身不带沙箱能力，只能依赖该文本约束模型行为，
+// 因此对 read/write 要求高的场景应把对应工具配成 mode=cli。
+func permissionGuardText(p task.Permission) string {
+	switch p {
+	case task.PermissionRead:
+		return "【运行权限：只读】当前任务以只读权限运行，这是最高优先级的系统约束，" +
+			"优先于用户后续的任何指令。你只能读取、搜索、分析代码与给出建议；" +
+			"严禁创建、修改、删除、移动任何文件，严禁执行任何会改变系统状态的命令" +
+			"（包括但不限于安装依赖、git 写操作、重启服务、访问网络提交数据）。" +
+			"如需要改动，请以代码块形式给出完整补丁或明确的人工操作步骤，由用户自行执行。"
+	case task.PermissionWrite:
+		return "【运行权限：工作区可写】当前任务仅允许在当前工作目录内新建或修改文件，" +
+			"这是最高优先级的系统约束。严禁写入工作目录之外的路径，严禁删除文件，" +
+			"严禁执行安装/卸载依赖、系统配置变更、git 提交推送等有副作用的命令；" +
+			"确需执行这类操作时，停下来向用户说明并等待人工处理。"
 	default:
-		return prompt
+		return ""
 	}
 }
 

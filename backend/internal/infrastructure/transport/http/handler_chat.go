@@ -36,6 +36,9 @@ type chatRequest struct {
 	Stream   *bool          `json:"stream,omitempty"`
 	// MaxTokens 最大输出长度。
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// Permission 可选文件权限收紧（read/write）；缺省 all。
+	// 网页入口无秘钥上限，允许用户在界面里主动选择「只读分析」。
+	Permission string `json:"permission,omitempty"`
 }
 
 // chatMetaEvent 首个事件，携带任务元信息，便于前端展示「正在排队 / 直连中」。
@@ -66,17 +69,24 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	perm, ok := task.ParsePermission(req.Permission)
+	if !ok {
+		writeErr(w, apperr.New(apperr.CodeInvalidParam,
+			"invalid permission, allowed values: read | write | all"))
+		return
+	}
 
 	res, err := h.chat.Execute(r.Context(), gateway.ChatCommand{
-		OwnerID:   userFromContext(r.Context()).ID(),
-		APIKeyID:  "web",
-		AgentID:   agent.ID(req.AgentID),
-		Model:     m,
-		Messages:  req.Messages,
-		Mode:      task.ParseMode(req.Mode),
-		Stream:    stream,
-		WorkDir:   req.WorkDir,
-		MaxTokens: req.MaxTokens,
+		OwnerID:    userFromContext(r.Context()).ID(),
+		APIKeyID:   "web",
+		AgentID:    agent.ID(req.AgentID),
+		Model:      m,
+		Messages:   req.Messages,
+		Mode:       task.ParseMode(req.Mode),
+		Stream:     stream,
+		WorkDir:    req.WorkDir,
+		MaxTokens:  req.MaxTokens,
+		Permission: perm,
 	})
 	if err != nil {
 		writeErr(w, err)

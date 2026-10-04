@@ -160,18 +160,42 @@ func (h *httpHarness) req(method, path, token string, body any) (int, map[string
 }
 
 // createKey 通过 API 创建秘钥，返回明文。
-func (h *httpHarness) createKey(token, name string, scopes []string, t *testing.T) string {
+// perms 可选：首元素为文件操作权限（read/write/all），缺省由后端补 all。
+func (h *httpHarness) createKey(token, name string, scopes []string, t *testing.T, perms ...string) string {
 	t.Helper()
-	status, body := h.req(http.MethodPost, "/api/keys", token, map[string]any{"name": name, "scopes": scopes})
-	if status != http.StatusCreated {
-		t.Fatalf("create key status=%d body=%v", status, body)
+	body := map[string]any{"name": name, "scopes": scopes}
+	if len(perms) > 0 {
+		body["permission"] = perms[0]
 	}
-	keyObj, _ := body["key"].(map[string]any)
-	secret, _ := keyObj["secret"].(string)
-	if secret == "" {
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequest(http.MethodPost, h.ts.URL+"/api/keys", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create key status=%d body=%s", resp.StatusCode, data)
+	}
+	var out struct {
+		Key struct {
+			Secret     string `json:"secret"`
+			Permission string `json:"permission"`
+		} `json:"key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Key.Secret == "" {
 		t.Fatal("secret missing")
 	}
-	return secret
+	if len(perms) > 0 && out.Key.Permission != perms[0] {
+		t.Fatalf("permission echo = %q, want %q", out.Key.Permission, perms[0])
+	}
+	return out.Key.Secret
 }
 
 func TestAuthLoginSessionAndRBAC(t *testing.T) {

@@ -41,7 +41,7 @@ func TestCLIAdapterRealClaude(t *testing.T) {
 	if err := a.HealthCheck(context.Background()); err != nil {
 		t.Fatalf("健康探测失败: %v", err)
 	}
-	t.Logf("实际 argv = %v", a.buildArgs("<PROMPT>"))
+	t.Logf("实际 argv = %v", a.buildArgs("<PROMPT>", task.PermissionAll))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

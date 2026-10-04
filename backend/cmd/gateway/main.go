@@ -103,7 +103,10 @@ func run(configPath string) error {
 	userRepo := mysqlpersist.NewUserRepository(db)
 	keyRepo := mysqlpersist.NewAPIKeyRepository(db)
 	sessionRepo := mysqlpersist.NewSessionRepository(db)
-	agentRepo := mysqlpersist.NewAgentRepository(db)
+	// agents 表只持久化身份；在线状态/健康快照等运行时态由内存装饰器在网关
+	// 进程内维护（重启后随 Agent 下一次 pull/健康上报重建），不能直接把
+	// MySQL 仓储交给 registry——否则每次读回都是 offline 副本。
+	agentRepo := memory.NewRuntimeAgentRepository(mysqlpersist.NewAgentRepository(db))
 	botMySQLRepo := mysqlpersist.NewBotRepository(db)
 
 	// 旧版 bots.json 一次性迁移到 MySQL（空库才执行，成功后改名 .migrated）。

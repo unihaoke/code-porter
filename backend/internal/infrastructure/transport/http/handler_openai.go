@@ -27,6 +27,10 @@ const WorkDirHeader = "X-CodePorter-WorkDir"
 // AgentHeader 指定目标 Agent（可选，MVP 单 Agent 可不传）。
 const AgentHeader = "X-CodePorter-Agent"
 
+// PermissionHeader 单次请求的文件操作权限（可选）：read | write | all。
+// 只能在秘钥授予的权限上限内收紧，不能提权；缺省取秘钥权限。
+const PermissionHeader = "X-CodePorter-Permission"
+
 // TaskIDHeader 响应中回传的任务 ID。
 const TaskIDHeader = "X-CodePorter-Task-Id"
 
@@ -94,10 +98,23 @@ func (h *ChatCompletionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	workDir := headerIgnoreCase(r, WorkDirHeader)
 	agentID := headerIgnoreCase(r, AgentHeader)
 
+	// 权限 = min(秘钥上限, 请求头声明)。read 秘钥无法靠请求头提权。
+	keyPerm := task.Permission(apiPermissionFromContext(r.Context()))
+	perm := keyPerm
+	if raw := headerIgnoreCase(r, PermissionHeader); raw != "" {
+		reqPerm, ok := task.ParsePermission(raw)
+		if !ok {
+			writeErr(w, apperr.New(apperr.CodeInvalidParam,
+				"invalid permission, allowed values: read | write | all"))
+			return
+		}
+		perm = task.RestrictPermission(keyPerm, reqPerm)
+	}
+
 	cmd := gateway.SubmitTaskCommand{
-		OwnerID:   owner.ID(),
-		APIKeyID:  keyID,
-		AgentID:   agentIDOf(agentID),
+		OwnerID:     owner.ID(),
+		APIKeyID:    keyID,
+		AgentID:     agentIDOf(agentID),
 		Model:       m,
 		Messages:    toDomainMessages(req.Messages),
 		Operation:   operation,
@@ -106,6 +123,7 @@ func (h *ChatCompletionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		Mode:        mode,
 		Temperature: req.Temperature,
 		MaxTokens:   derefInt(req.MaxTokens),
+		Permission:  perm,
 	}
 
 	result, err := h.submit.Execute(r.Context(), cmd)

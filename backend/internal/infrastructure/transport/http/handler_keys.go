@@ -23,9 +23,10 @@ func NewKeysHandlers(svc *authsvc.Service, log port.Logger) *KeysHandlers {
 }
 
 type createKeyRequest struct {
-	Name      string   `json:"name"`
-	Scopes    []string `json:"scopes,omitempty"`
-	ExpiresAt string   `json:"expires_at,omitempty"` // RFC3339；空串/缺省=永久
+	Name       string   `json:"name"`
+	Scopes     []string `json:"scopes,omitempty"`
+	Permission string   `json:"permission,omitempty"` // read | write | all；空=all
+	ExpiresAt  string   `json:"expires_at,omitempty"` // RFC3339；空串/缺省=永久
 }
 
 // Create 创建秘钥（明文仅此一次返回）。
@@ -40,7 +41,8 @@ func (h *KeysHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	res, err := h.svc.CreateKey(r.Context(), userFromContext(r.Context()), req.Name, req.Scopes, expires)
+	res, err := h.svc.CreateKey(r.Context(), userFromContext(r.Context()),
+		req.Name, req.Scopes, req.Permission, expires)
 	if err != nil {
 		writeErr(w, err)
 		return

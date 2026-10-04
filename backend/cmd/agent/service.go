@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/infrastructure/client"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
+	"github.com/codeporter/code-porter/internal/infrastructure/feishubot"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
 	"github.com/codeporter/code-porter/internal/infrastructure/mcp"
 	"github.com/codeporter/code-porter/internal/infrastructure/system"
@@ -223,6 +225,11 @@ func (s *Service) Start() error {
 		healthReporter.Run(ctx)
 	}()
 
+	// 本地飞书机器人（可选）：长连接收消息 → 复用本地协程池与执行器直接处理。
+	if err := s.startFeishuBot(ctx, cfg.Bots.Feishu, executor, workerPool, policy, instanceID); err != nil {
+		return err
+	}
+
 	hostname, osName := probe.HostInfo()
 	s.log.Info("codeporter agent started",
 		port.F("version", "0.2.0"),
@@ -232,6 +239,7 @@ func (s *Service) Start() error {
 		port.F("max_concurrency", cfg.WorkerPool.MaxConcurrency),
 		port.F("queue_size", cfg.WorkerPool.QueueSize),
 		port.F("direct_mode", cfg.Direct.Enabled),
+		port.F("feishu_bot", cfg.Bots.Feishu.Enabled),
 		port.F("host", hostname),
 		port.F("os", osName))
 
@@ -239,6 +247,52 @@ func (s *Service) Start() error {
 	s.running = true
 	s.mu.Unlock()
 	s.emitEvent("status", s.Status())
+	return nil
+}
+
+// startFeishuBot 按配置启动本地飞书机器人；未启用直接跳过。
+//
+// 注意：runner 的建连失败不阻断 Agent 主流程——SDK 内部会持续重连，
+// 因此这里只做参数校验与 goroutine 启动。
+func (s *Service) startFeishuBot(ctx context.Context, fc config.FeishuBotConfig,
+	executor *agentapp.TaskExecutor, workerPool *pool.Pool, policy agentapp.Policy, instanceID string) error {
+	if !fc.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(fc.AppID) == "" || strings.TrimSpace(fc.AppSecret) == "" {
+		return errors.New("bots.feishu 已启用，但 app_id / app_secret 未配置")
+	}
+	m := model.Model(fc.Model)
+	if m == "" {
+		m = model.ClaudeCode
+	}
+	if _, err := model.Parse(string(m)); err != nil {
+		return fmt.Errorf("bots.feishu.model 非法: %w", err)
+	}
+
+	svc := agentapp.NewFeishuBotService(nil, executor, workerPool, agentapp.FeishuBotConfig{
+		Model:        m,
+		MentionOnly:  fc.MentionOnly,
+		Ack:          fc.Ack,
+		SystemPrompt: fc.SystemPrompt,
+	}, policy, s.log)
+	runner, err := feishubot.NewRunner(fc.AppID, fc.AppSecret, svc.OnMessage, s.log)
+	if err != nil {
+		return err
+	}
+	// runner 只能在构造后注入 service（两者互为依赖），通过 setter 闭环。
+	svc.SetRunner(runner)
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		if err := runner.Start(ctx); err != nil {
+			s.log.Warn("feishu bot exited", port.F("agent_id", instanceID), port.F("err", err.Error()))
+		}
+	}()
+	s.log.Info("feishu bot enabled",
+		port.F("app_id", fc.AppID), port.F("model", m.String()),
+		port.F("mention_only", fc.MentionOnly))
 	return nil
 }
 

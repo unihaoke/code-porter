@@ -11,6 +11,11 @@ import (
 	"github.com/codeporter/code-porter/pkg/pool"
 )
 
+// stableSessionDuration 会话被视为「稳定」的最短存活时间：存活超过它才重置退避。
+// 短于该时间就反复建立/断开（服务端上下文错用、被代理立即掐断等）说明链路异常，
+// 必须指数退避，避免本机以亚毫秒级节奏重拨，刷爆日志并冲击网关。
+const stableSessionDuration = 10 * time.Second
+
 // DirectConsumer SSE 直连模式的消费者：维持出站 WebSocket，实时接收推送任务。
 //
 // 特点（PRD 3.2）：任务不进队列、低延迟；连接断开时当前任务中断，
@@ -65,11 +70,22 @@ func (c *DirectConsumer) Run(ctx context.Context) {
 			c.sleep(ctx, wait)
 			continue
 		}
-		c.backoff.Reset()
+		connectedAt := time.Now()
 		c.log.Info("direct session established", port.F("agent", string(c.agentID)))
 		c.consume(ctx, session)
 		_ = session.Close()
-		c.log.Warn("direct session closed, reconnecting")
+
+		// 会话存活过短不重置退避：只有稳定存活超过阈值的连接才视为恢复正常，
+		// 随后仍等待一个最小间隔再重连，避免任何服务端异常再次放大成拨号风暴。
+		lived := time.Since(connectedAt)
+		if lived >= stableSessionDuration {
+			c.backoff.Reset()
+		}
+		wait := c.backoff.Next(false, false)
+		c.log.Warn("direct session closed, reconnecting",
+			port.F("lived_ms", lived.Milliseconds()),
+			port.F("wait", wait.String()))
+		c.sleep(ctx, wait)
 	}
 }
 

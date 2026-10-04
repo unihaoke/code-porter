@@ -107,5 +107,12 @@ func applyAgentEnv(cfg *AgentConfig, configPath string) {
 	set("ANTHROPIC_API_KEY", &cfg.Secrets.AnthropicAPIKey)
 	set("OPENAI_API_KEY", &cfg.Secrets.OpenAIAPIKey)
 
+	// 本地飞书机器人：凭证建议走环境变量；FEISHU_BOT_ENABLED 可无文件启用。
+	set("FEISHU_APP_ID", &cfg.Bots.Feishu.AppID)
+	set("FEISHU_APP_SECRET", &cfg.Bots.Feishu.AppSecret)
+	set("FEISHU_BOT_MODEL", &cfg.Bots.Feishu.Model)
+	setBool("FEISHU_BOT_ENABLED", &cfg.Bots.Feishu.Enabled)
+	setBool("FEISHU_BOT_MENTION_ONLY", &cfg.Bots.Feishu.MentionOnly)
+
 	set("LOG_LEVEL", &cfg.Log.Level)
 }

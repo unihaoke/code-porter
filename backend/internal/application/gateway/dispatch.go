@@ -21,6 +21,7 @@ func toDispatch(t *task.Task, mcpTimeout time.Duration) port.TaskDispatch {
 		WorkDir:        t.Request().WorkDir,
 		Temperature:    t.Request().Temperature,
 		MaxTokens:      t.Request().MaxTokens,
+		Permission:     t.Request().Permission.String(),
 		LockToken:      t.LockToken(),
 		Attempt:        t.Attempts(),
 		CreatedAt:      t.CreatedAt(),

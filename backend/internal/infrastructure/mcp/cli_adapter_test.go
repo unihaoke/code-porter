@@ -72,7 +72,7 @@ func TestCLIBuildArgs(t *testing.T) {
 		MaxTurns:       3,
 		ExtraArgs:      []string{"--verbose"},
 	})
-	got := a.buildArgs("你好 世界")
+	got := a.buildArgs("你好 世界", task.PermissionAll)
 	want := []string{"-p", "你好 世界", "--output-format", "json",
 		"--model", "sonnet", "--permission-mode", "bypassPermissions",
 		"--max-turns", "3", "--verbose"}
@@ -87,7 +87,7 @@ func TestCLIBuildArgsPromptViaStdin(t *testing.T) {
 		Args:           []string{"-p", "{{prompt}}", "--json"},
 		PromptViaStdin: true,
 	})
-	got := a.buildArgs("忽略我")
+	got := a.buildArgs("忽略我", task.PermissionAll)
 	for _, g := range got {
 		if g == "忽略我" {
 			t.Errorf("提示词不应出现在 argv 中: %v", got)

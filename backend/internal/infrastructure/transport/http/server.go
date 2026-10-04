@@ -81,7 +81,11 @@ func NewServer(d Deps) *Server {
 
 	chat := NewChatHandler(d.Chat, d.Policy, d.Logger)
 	chatCompletion := NewChatCompletionHandler(d.Submit, keyLimiter, d.Logger, d.Policy)
-	agentHandlers := NewAgentHandlers(d.Pull, d.Ack, d.Health, d.Registry, d.Hub, d.Logger)
+	// WebSocket 升级后 HTTP handler 立即返回、r.Context() 随之取消，
+	// 因此长连接读循环必须挂在与请求无关的 serveCtx 上，否则连接会在
+	// 升级成功的瞬间被关闭，Agent 侧表现为毫秒级重连风暴。
+	agentHandlers := NewAgentHandlers(d.Pull, d.Ack, d.Health, d.Registry, d.Hub, d.Logger).
+		WithBaseContext(serveCtx)
 	console := NewConsoleHandlers(d.Registry, d.TaskRepo, d.QueueRepo, d.BotRepo, d.Users, d.Hub, d.Logger)
 	authH := NewAuthHandlers(d.Auth, nil, d.Logger)
 	usersH := NewUsersHandlers(d.Auth, d.Logger)
@@ -219,8 +223,8 @@ func (s *Server) Shutdown() error {
 // healthz 健康检查。
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"service": "codeporter-gateway",
+		"ok":       true,
+		"service":  "codeporter-gateway",
 		"ws_conns": connCount(s.hub),
 	})
 }

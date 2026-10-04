@@ -20,6 +20,8 @@ export interface KeyView {
   id: string
   name: string
   scopes: string[]
+  /** 文件操作权限：read 只读 / write 工作区可写 / all 全部 */
+  permission: 'read' | 'write' | 'all' | string
   prefix: string
   expires_at?: string | null
   last_used_at?: string | null
@@ -67,6 +69,8 @@ export const usersApi = {
 export interface CreateKeyInput {
   name: string
   scopes?: string[]
+  /** 文件操作权限，缺省 all */
+  permission?: 'read' | 'write' | 'all'
   expires_at?: string | null
 }
 

@@ -40,6 +40,8 @@ type SubmitTaskCommand struct {
 	Temperature *float64
 	// MaxTokens 最大输出长度。
 	MaxTokens int
+	// Permission 本地文件操作权限上限（秘钥上限与请求头收紧后的交集）；缺省 all。
+	Permission task.Permission
 }
 
 // SubmitTaskResult 提交结果。
@@ -122,6 +124,17 @@ func (u *SubmitTaskUseCase) Execute(ctx context.Context, cmd SubmitTaskCommand) 
 	}
 
 	now := u.clock.Now()
+	req := task.Request{
+		Prompt:      cmd.Prompt,
+		Messages:    cmd.Messages,
+		Files:       cmd.Files,
+		Operation:   cmd.Operation,
+		WorkDir:     cmd.WorkDir,
+		Temperature: cmd.Temperature,
+		MaxTokens:   cmd.MaxTokens,
+		Permission:  cmd.Permission,
+	}
+	req.Normalize() // 权限缺省 all，确保下发给 Agent 的值始终显式合法。
 	t, err := task.NewTask(task.Spec{
 		AgentID:     ag.ID(),
 		OwnerID:     ownerID,
@@ -133,15 +146,7 @@ func (u *SubmitTaskUseCase) Execute(ctx context.Context, cmd SubmitTaskCommand) 
 		TTL:         u.policy.TTL,
 		APIKeyID:    cmd.APIKeyID,
 		Now:         now,
-		Request: task.Request{
-			Prompt:      cmd.Prompt,
-			Messages:    cmd.Messages,
-			Files:       cmd.Files,
-			Operation:   cmd.Operation,
-			WorkDir:     cmd.WorkDir,
-			Temperature: cmd.Temperature,
-			MaxTokens:   cmd.MaxTokens,
-		},
+		Request:     req,
 	})
 	if err != nil {
 		return nil, err
@@ -198,6 +203,7 @@ func (u *SubmitTaskUseCase) Execute(ctx context.Context, cmd SubmitTaskCommand) 
 		port.F("agent", string(ag.ID())),
 		port.F("model", cmd.Model.String()),
 		port.F("mode", decision.Mode.String()),
+		port.F("permission", req.Permission.String()),
 		port.F("stream", cmd.Stream),
 		port.F("reason", decision.Reason),
 	)

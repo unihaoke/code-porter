@@ -3,7 +3,9 @@ module github.com/codeporter/code-porter
 go 1.23
 
 require (
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/gorilla/websocket v1.5.3
+	github.com/larksuite/oapi-sdk-go/v3 v3.12.0
 	github.com/lxn/walk v0.0.0-20210112085537-c389da54e794
 	github.com/shirou/gopsutil/v3 v3.24.5
 	golang.org/x/crypto v0.31.0
@@ -14,7 +16,7 @@ require (
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
+	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/lxn/win v0.0.0-20210218163916-a377121e959e // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect

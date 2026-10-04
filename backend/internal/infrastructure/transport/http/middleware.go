@@ -17,9 +17,10 @@ import (
 type contextKey string
 
 const (
-	ctxKeyUser  contextKey = "session_user"
-	ctxKeyKeyID contextKey = "api_key_id"
-	ctxKeyAgent contextKey = "agent"
+	ctxKeyUser       contextKey = "session_user"
+	ctxKeyKeyID      contextKey = "api_key_id"
+	ctxKeyAgent      contextKey = "agent"
+	ctxKeyPermission contextKey = "api_key_permission"
 )
 
 // userFromContext 取出当前登录/鉴权用户。
@@ -35,6 +36,15 @@ func userFromContext(ctx context.Context) *userpkg.User {
 func apiKeyIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(ctxKeyKeyID).(apikey.ID)
 	return string(id)
+}
+
+// apiPermissionFromContext 取出秘钥授予的文件操作权限上限；无秘钥上下文时返回 all。
+func apiPermissionFromContext(ctx context.Context) apikey.Permission {
+	p, _ := ctx.Value(ctxKeyPermission).(apikey.Permission)
+	if p == "" {
+		return apikey.PermissionAll
+	}
+	return p
 }
 
 // agentFrom 取出 Agent 实例。
@@ -150,6 +160,7 @@ func WithAPIKeyAuth(auth *APIKeyAuthenticator, next http.HandlerFunc) http.Handl
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyUser, u)
 		ctx = context.WithValue(ctx, ctxKeyKeyID, k.ID())
+		ctx = context.WithValue(ctx, ctxKeyPermission, k.Permission())
 		next(w, r.WithContext(ctx))
 	}
 }

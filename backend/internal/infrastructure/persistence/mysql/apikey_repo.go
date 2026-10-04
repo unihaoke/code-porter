@@ -32,13 +32,14 @@ func (r *APIKeyRepository) Save(ctx context.Context, k *apikey.APIKey) error {
 		lastUsed = sql.NullTime{Time: k.LastUsedAt(), Valid: true}
 	}
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO api_keys (id, user_id, name, key_hash, prefix, scopes, expires_at, last_used_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO api_keys (id, user_id, name, key_hash, prefix, scopes, permission, expires_at, last_used_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
-			name=VALUES(name), scopes=VALUES(scopes), expires_at=VALUES(expires_at),
+			name=VALUES(name), scopes=VALUES(scopes), permission=VALUES(permission),
+			expires_at=VALUES(expires_at),
 			last_used_at=VALUES(last_used_at), updated_at=VALUES(updated_at)`,
 		string(k.ID()), string(k.OwnerID()), k.Name(), k.KeyHash(), k.Prefix(),
-		encodeScopes(k.Scopes()), expiresAt, lastUsed, k.CreatedAt(), k.UpdatedAt())
+		encodeScopes(k.Scopes()), string(k.Permission()), expiresAt, lastUsed, k.CreatedAt(), k.UpdatedAt())
 	return err
 }
 
@@ -54,7 +55,7 @@ func (r *APIKeyRepository) FindByID(ctx context.Context, id apikey.ID) (*apikey.
 
 func (r *APIKeyRepository) findOne(ctx context.Context, where string, arg any) (*apikey.APIKey, error) {
 	row := r.db.QueryRowContext(ctx, `
-		SELECT id, user_id, name, key_hash, prefix, scopes, expires_at, last_used_at, created_at, updated_at
+		SELECT id, user_id, name, key_hash, prefix, scopes, permission, expires_at, last_used_at, created_at, updated_at
 		FROM api_keys `+where, arg)
 	k, err := scanAPIKey(row)
 	if err != nil {
@@ -75,7 +76,7 @@ func (r *APIKeyRepository) ListAll(ctx context.Context) ([]*apikey.APIKey, error
 
 func (r *APIKeyRepository) query(ctx context.Context, tail string, args ...any) ([]*apikey.APIKey, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, user_id, name, key_hash, prefix, scopes, expires_at, last_used_at, created_at, updated_at
+		SELECT id, user_id, name, key_hash, prefix, scopes, permission, expires_at, last_used_at, created_at, updated_at
 		FROM api_keys `+tail, args...)
 	if err != nil {
 		return nil, err
@@ -106,12 +107,12 @@ func (r *APIKeyRepository) Delete(ctx context.Context, id apikey.ID) error {
 
 func scanAPIKey(s rowScanner) (*apikey.APIKey, error) {
 	var (
-		id, userID, name, keyHash, prefix, scopesCSV string
-		expiresAt                                    sql.NullTime
-		lastUsed                                     sql.NullTime
-		createdAt, updatedAt                         time.Time
+		id, userID, name, keyHash, prefix, scopesCSV, permission string
+		expiresAt                                                sql.NullTime
+		lastUsed                                                 sql.NullTime
+		createdAt, updatedAt                                     time.Time
 	)
-	if err := s.Scan(&id, &userID, &name, &keyHash, &prefix, &scopesCSV,
+	if err := s.Scan(&id, &userID, &name, &keyHash, &prefix, &scopesCSV, &permission,
 		&expiresAt, &lastUsed, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, apikey.ErrAPIKeyNotFound
@@ -125,7 +126,7 @@ func scanAPIKey(s rowScanner) (*apikey.APIKey, error) {
 		expires = &t
 	}
 	k.Rewrite(apikey.ID(id), user.ID(userID), name, decodeScopes(scopesCSV),
-		keyHash, prefix, expires, lastUsed.Time, createdAt, updatedAt)
+		apikey.Permission(permission), keyHash, prefix, expires, lastUsed.Time, createdAt, updatedAt)
 	return k, nil
 }
 

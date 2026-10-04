@@ -42,6 +42,31 @@ func (s Scope) Valid() bool { return s == ScopeAgent || s == ScopeAPI }
 // AllScopes 全部合法 scope（创建秘钥缺省时使用）。
 var AllScopes = []Scope{ScopeAgent, ScopeAPI}
 
+// Permission 秘钥授予的本地文件操作权限（作用于通过该秘钥下发的任务）。
+//
+// 与 scope 是两个正交维度：scope 决定「能调哪类接口」（agent 接入 / api 调用），
+// permission 决定「任务在本地机器上能动什么」：
+//   - PermissionRead 只读：禁止改文件与副作用命令；
+//   - PermissionWrite 可写：仅允许工作目录内写入；
+//   - PermissionAll 全部：读写与命令执行放开（默认）。
+//
+// 字符串值与 domain/task.Permission 保持一致，应用层可直接互转。
+type Permission string
+
+const (
+	// PermissionRead 只读权限。
+	PermissionRead Permission = "read"
+	// PermissionWrite 工作目录可写权限。
+	PermissionWrite Permission = "write"
+	// PermissionAll 全部权限（缺省）。
+	PermissionAll Permission = "all"
+)
+
+// Valid 权限是否合法。
+func (p Permission) Valid() bool {
+	return p == PermissionRead || p == PermissionWrite || p == PermissionAll
+}
+
 // PrefixLen 列表展示用前缀长度（明文前 10 位，含 cp_ 前缀）。
 const PrefixLen = 10
 
@@ -66,6 +91,8 @@ var (
 	ErrEmptyPrefix = apperr.New(apperr.CodeInvalidParam, "api key prefix is required")
 	// ErrInvalidScope scope 非法或为空。
 	ErrInvalidScope = apperr.New(apperr.CodeInvalidParam, "invalid api key scope")
+	// ErrInvalidPermission 文件操作权限非法。
+	ErrInvalidPermission = apperr.New(apperr.CodeInvalidParam, "invalid api key permission")
 	// ErrExpiresInPast 有效期不能早于当前时间。
 	ErrExpiresInPast = apperr.New(apperr.CodeInvalidParam, "api key expires_at must be in the future")
 )
@@ -80,6 +107,8 @@ type Spec struct {
 	Name string
 	// Scopes 权限范围；非空且必须是合法 scope 的去重子集。
 	Scopes []Scope
+	// Permission 通过该秘钥下发任务时的本地文件操作权限上限；缺省 all。
+	Permission Permission
 	// KeyHash 明文秘钥的 SHA-256 hex（由应用层计算）。
 	KeyHash string
 	// Prefix 明文前 PrefixLen 位，用于列表辨识。
@@ -96,6 +125,7 @@ type APIKey struct {
 	userID     user.ID
 	name       string
 	scopes     []Scope
+	permission Permission
 	keyHash    string
 	prefix     string
 	expiresAt  *time.Time
@@ -120,6 +150,13 @@ func NewKey(spec Spec) (*APIKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	permission := spec.Permission
+	if permission == "" {
+		permission = PermissionAll
+	}
+	if !permission.Valid() {
+		return nil, ErrInvalidPermission
+	}
 	keyHash := strings.TrimSpace(spec.KeyHash)
 	if len(keyHash) != hashLen {
 		return nil, ErrEmptyHash
@@ -140,15 +177,16 @@ func NewKey(spec Spec) (*APIKey, error) {
 		idValue = NewID()
 	}
 	return &APIKey{
-		id:        idValue,
-		userID:    spec.UserID,
-		name:      name,
-		scopes:    scopes,
-		keyHash:   keyHash,
-		prefix:    prefix,
-		expiresAt: cloneTime(spec.ExpiresAt),
-		createdAt: now,
-		updatedAt: now,
+		id:         idValue,
+		userID:     spec.UserID,
+		name:       name,
+		scopes:     scopes,
+		permission: permission,
+		keyHash:    keyHash,
+		prefix:     prefix,
+		expiresAt:  cloneTime(spec.ExpiresAt),
+		createdAt:  now,
+		updatedAt:  now,
 	}, nil
 }
 
@@ -175,6 +213,14 @@ func (k *APIKey) Name() string { return k.name }
 
 // Scopes 权限范围副本。
 func (k *APIKey) Scopes() []Scope { return append([]Scope(nil), k.scopes...) }
+
+// Permission 通过该秘钥下发任务的文件操作权限上限。
+func (k *APIKey) Permission() Permission {
+	if k.permission == "" {
+		return PermissionAll
+	}
+	return k.permission
+}
 
 // KeyHash 秘钥哈希（仅仓储鉴权路径使用，严禁进入响应体）。
 func (k *APIKey) KeyHash() string { return k.keyHash }
@@ -234,12 +280,16 @@ func (k *APIKey) MarkUsed(now time.Time) {
 }
 
 // Rewrite 回填仓储反序列化字段，仅供仓储使用。
-func (k *APIKey) Rewrite(id ID, userID user.ID, name string, scopes []Scope, keyHash, prefix string,
-	expiresAt *time.Time, lastUsedAt, createdAt, updatedAt time.Time) {
+func (k *APIKey) Rewrite(id ID, userID user.ID, name string, scopes []Scope, permission Permission,
+	keyHash, prefix string, expiresAt *time.Time, lastUsedAt, createdAt, updatedAt time.Time) {
 	k.id = id
 	k.userID = userID
 	k.name = name
 	k.scopes = append([]Scope(nil), scopes...)
+	if permission == "" {
+		permission = PermissionAll
+	}
+	k.permission = permission
 	k.keyHash = keyHash
 	k.prefix = prefix
 	k.expiresAt = cloneTime(expiresAt)

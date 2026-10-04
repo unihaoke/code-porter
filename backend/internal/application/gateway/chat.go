@@ -32,6 +32,8 @@ type ChatCommand struct {
 	Temperature *float64
 	// MaxTokens 最大输出长度。
 	MaxTokens int
+	// Permission 文件操作权限；网页端缺省 all（用户操作自己的机器）。
+	Permission task.Permission
 }
 
 // ChatUseCase 网页对话用例：把控制台 / 网页端的对话请求翻译成任务。
@@ -77,5 +79,6 @@ func (u *ChatUseCase) Execute(ctx context.Context, cmd ChatCommand) (*SubmitTask
 		WorkDir:     cmd.WorkDir,
 		Temperature: cmd.Temperature,
 		MaxTokens:   cmd.MaxTokens,
+		Permission:  cmd.Permission,
 	})
 }

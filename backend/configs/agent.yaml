@@ -35,6 +35,21 @@ direct:
 health:
   interval: 15s
 
+# 本地 IM 机器人（可选）。
+# 飞书机器人直接运行在本客户端：通过官方长连接（WebSocket 出站）接收消息，
+# 本机调用 AI 工具处理后用 OpenAPI 回复，不经过网关、不需要公网域名/加密配置。
+# 前置：飞书开放平台企业自建应用开启「机器人」能力，事件订阅选择
+# 「使用长连接接收事件」并添加 im.message.receive_v1，然后发布版本。
+bots:
+  feishu:
+    enabled: false
+    app_id: ""              # cli_ 开头；也可用环境变量 FEISHU_APP_ID
+    app_secret: ""         # 建议用环境变量 FEISHU_APP_SECRET 注入，勿提交到仓库
+    model: ""              # 空=claude-code，可选 trae/codebuddy/codex
+    mention_only: true     # 群聊仅响应 @机器人（私聊始终响应）
+    ack: true              # 收到先回「处理中…」，长任务体验
+    system_prompt: ""
+
 mcp:
   work_dir: ""
   trae:

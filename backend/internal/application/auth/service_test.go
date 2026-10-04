@@ -209,7 +209,7 @@ func TestKeyLifecycle(t *testing.T) {
 	svc, users := newTestService(t)
 	admin, _ := users.FindByID(ctx, user.SeedAdminID)
 
-	created, err := svc.CreateKey(ctx, admin, "laptop", nil, nil)
+	created, err := svc.CreateKey(ctx, admin, "laptop", nil, "", nil)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
@@ -221,6 +221,10 @@ func TestKeyLifecycle(t *testing.T) {
 	}
 	if len(created.Scopes) != 2 {
 		t.Fatalf("default scopes should be both, got %v", created.Scopes)
+	}
+	// 文件权限缺省 all。
+	if created.Permission != string(apikey.PermissionAll) {
+		t.Fatalf("default permission = %q, want all", created.Permission)
 	}
 
 	// 列表不含明文。
@@ -262,7 +266,7 @@ func TestKeyScopeMatrixAndExpiry(t *testing.T) {
 	svc, users := newTestService(t)
 	admin, _ := users.FindByID(ctx, user.SeedAdminID)
 
-	apiOnly, err := svc.CreateKey(ctx, admin, "api-only", []string{"api"}, nil)
+	apiOnly, err := svc.CreateKey(ctx, admin, "api-only", []string{"api"}, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,11 +278,11 @@ func TestKeyScopeMatrixAndExpiry(t *testing.T) {
 	}
 
 	past := svc.deps.Clock.Now().Add(-time.Minute)
-	if _, err := svc.CreateKey(ctx, admin, "expired", nil, &past); err == nil {
+	if _, err := svc.CreateKey(ctx, admin, "expired", nil, "", &past); err == nil {
 		t.Fatal("past expiry rejected at creation")
 	}
 	future := svc.deps.Clock.Now().Add(time.Minute)
-	expKey, err := svc.CreateKey(ctx, admin, "soonexpire", nil, &future)
+	expKey, err := svc.CreateKey(ctx, admin, "soonexpire", nil, "", &future)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +302,7 @@ func TestKeyCrossTenant(t *testing.T) {
 		t.Fatal(err)
 	}
 	bobActor, _ := users.FindByID(ctx, user.ID(bob.ID))
-	ck, err := svc.CreateKey(ctx, admin, "admin-key", nil, nil)
+	ck, err := svc.CreateKey(ctx, admin, "admin-key", nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +317,7 @@ func TestKeyCrossTenant(t *testing.T) {
 		t.Fatalf("bob should see no keys: %v %d", err, len(list))
 	}
 	// admin 代管：可以列/删 bob 将要创建的秘钥。
-	bk, err := svc.CreateKey(ctx, bobActor, "bob-key", nil, nil)
+	bk, err := svc.CreateKey(ctx, bobActor, "bob-key", nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +363,7 @@ func TestViewsNeverContainSecrets(t *testing.T) {
 			t.Fatalf("user view leaks %q: %s", bad, body)
 		}
 	}
-	ck, err := svc.CreateKey(ctx, admin, "v", nil, nil)
+	ck, err := svc.CreateKey(ctx, admin, "v", nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

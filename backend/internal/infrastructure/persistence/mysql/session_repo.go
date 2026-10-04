@@ -31,8 +31,8 @@ func (r *SessionRepository) Save(ctx context.Context, s *user.Session) error {
 // FindByTokenHash 查询会话。
 func (r *SessionRepository) FindByTokenHash(ctx context.Context, tokenHash string) (*user.Session, error) {
 	var (
-		hash, uid                                           string
-		createdAt, expiresAt, lastSeen                      time.Time
+		hash, uid                      string
+		createdAt, expiresAt, lastSeen time.Time
 	)
 	err := r.db.QueryRowContext(ctx, `
 		SELECT token_hash, user_id, created_at, expires_at, last_seen_at

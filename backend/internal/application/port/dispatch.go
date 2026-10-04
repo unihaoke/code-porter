@@ -20,6 +20,8 @@ type TaskDispatch struct {
 	WorkDir     string          `json:"work_dir,omitempty"`
 	Temperature *float64        `json:"temperature,omitempty"`
 	MaxTokens   int             `json:"max_tokens,omitempty"`
+	// Permission 本地文件操作权限（read/write/all），Agent 侧必须据此限制 CLI 能力。
+	Permission string `json:"permission,omitempty"`
 	// LockToken 任务锁令牌，Agent 上报时必须带回。
 	LockToken string `json:"lock_token,omitempty"`
 	// Attempt 当前执行次数。

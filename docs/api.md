@@ -78,11 +78,22 @@
 创建秘钥请求：
 
 ```json
-{ "name": "work-laptop", "scopes": ["agent", "api"], "expires_at": "2026-12-31T23:59:59Z" }
+{ "name": "work-laptop", "scopes": ["agent", "api"], "permission": "all", "expires_at": "2026-12-31T23:59:59Z" }
 ```
 
 `scopes` 缺省为两个都含；`expires_at` 缺省（空串）= 永久。响应中的 `secret`（`cp_` 开头）
 **仅本次返回**，之后任何接口都无法再读到明文；列表只返回 `prefix`、scope、有效期与最近使用时间。
+
+`permission` 控制通过该秘钥下发的任务在本地机器上的文件操作上限，与 `scopes` 正交：
+
+| 值 | 含义 | 本地强制方式（CLI 模式） |
+|---|---|---|
+| `read` | 只读：禁止改文件与副作用命令 | Claude Code/CodeBuddy `--permission-mode plan`；Codex `--sandbox read-only` |
+| `write` | 仅工作目录内可写，禁止系统命令 | `acceptEdits`；Codex `--sandbox workspace-write` |
+| `all` | 读写与命令执行全开（缺省） | 沿用客户端 yaml 的 `permission_mode`（默认 bypassPermissions） |
+
+> MCP stdio 模式协议本身不带沙箱，此时 read/write 仅通过提示词约束模型（软限制）；
+> 需要硬隔离请把对应工具在客户端配置为 `mode: cli`。
 
 ---
 
@@ -105,6 +116,9 @@
 - `x-codeporter-mode: pull | direct`（默认 `pull`）；
 - `x-codeporter-agent: <实例ID>`（可选）。不携带时按租户自动路由：名下 0 台→503，
   1 台→自动选择，多于 1 台→409（响应体附实例清单）。
+- `x-codeporter-permission: read | write | all`（可选）：把本次调用收紧到指定权限，
+  只能在秘钥的 `permission` 上限内收紧、无法提权（read 秘钥即使传 all 仍按 read 执行）；
+  缺省取秘钥权限。
 
 `stream=false` 返回完整的 `chat.completion`；`stream=true` 返回 SSE（`data: {...}` + `data: [DONE]`）。
 

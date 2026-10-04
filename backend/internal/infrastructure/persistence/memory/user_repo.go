@@ -10,9 +10,9 @@ import (
 
 // UserRepository 用户仓储的内存实现（测试与本地装配使用）。
 type UserRepository struct {
-	mu       sync.RWMutex
-	byID     map[user.ID]*user.User
-	byName   map[string]user.ID
+	mu     sync.RWMutex
+	byID   map[user.ID]*user.User
+	byName map[string]user.ID
 }
 
 // NewUserRepository 构造仓储。

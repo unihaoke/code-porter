@@ -23,6 +23,7 @@ const showCreate = ref(false)
 const name = ref('')
 const scopeAgent = ref(true)
 const scopeAPI = ref(true)
+const permission = ref<'read' | 'write' | 'all'>('all')
 const expiryPreset = ref('never')
 const error = ref('')
 const creating = ref(false)
@@ -35,6 +36,7 @@ function openCreate() {
   name.value = ''
   scopeAgent.value = true
   scopeAPI.value = true
+  permission.value = 'all'
   expiryPreset.value = 'never'
   error.value = ''
   showCreate.value = true
@@ -68,7 +70,12 @@ async function submitCreate() {
   }
   creating.value = true
   try {
-    const res = await keysApi.create({ name: name.value.trim(), scopes, expires_at: expiresAt() })
+    const res = await keysApi.create({
+      name: name.value.trim(),
+      scopes,
+      permission: permission.value,
+      expires_at: expiresAt(),
+    })
     created.value = res.key
     copied.value = false
     showCreate.value = false
@@ -100,6 +107,30 @@ function scopeText(k: KeyView): string {
   return k.scopes
     .map((s) => (s === 'agent' ? '客户端接入' : 'OpenAI API'))
     .join('、')
+}
+
+// 文件权限的中文展示；存量秘钥无该字段时按「全部」呈现。
+function permissionText(p?: string): string {
+  switch (p) {
+    case 'read':
+      return '只读'
+    case 'write':
+      return '可写'
+    default:
+      return '全部'
+  }
+}
+
+// 文件权限对应的标签样式：只读最保守用绿色，可写橙色，全部中性灰。
+function permissionClass(p?: string): string {
+  switch (p) {
+    case 'read':
+      return 'tag--read'
+    case 'write':
+      return 'tag--write'
+    default:
+      return 'tag--all'
+  }
 }
 
 function fmtTime(s?: string | null): string {
@@ -146,7 +177,12 @@ onMounted(load)
           <tr v-for="k in list" :key="k.id">
             <td>{{ k.name }}</td>
             <td class="mono">{{ k.prefix }}…</td>
-            <td>{{ scopeText(k) }}</td>
+            <td>
+              <div>{{ scopeText(k) }}</div>
+              <span :class="['tag tag--perm', permissionClass(k.permission)]">
+                文件：{{ permissionText(k.permission) }}
+              </span>
+            </td>
             <td>{{ fmtTime(k.expires_at) }}</td>
             <td>{{ fmtTime(k.last_used_at) }}</td>
             <td>
@@ -177,6 +213,21 @@ onMounted(load)
           <label>权限范围</label>
           <label class="check-row"><input v-model="scopeAgent" type="checkbox" /> 客户端接入（agent：本地客户端连接网关）</label>
           <label class="check-row"><input v-model="scopeAPI" type="checkbox" /> OpenAI API（api：/v1/chat/completions 调用）</label>
+        </div>
+        <div class="field">
+          <label>文件操作权限（任务下发到本地 AI 时生效）</label>
+          <label class="check-row">
+            <input v-model="permission" type="radio" value="read" />
+            仅可读：只能阅读分析代码，禁止改文件和执行命令（Claude Code 走 plan 只读模式，Codex 走 read-only 沙箱）
+          </label>
+          <label class="check-row">
+            <input v-model="permission" type="radio" value="write" />
+            仅可写：允许修改工作目录内文件，禁止目录外写入与系统命令（acceptEdits / workspace-write）
+          </label>
+          <label class="check-row">
+            <input v-model="permission" type="radio" value="all" />
+            全部：读写文件与执行命令均放开（默认）
+          </label>
         </div>
         <div class="field">
           <label>有效期</label>
@@ -242,6 +293,26 @@ onMounted(load)
 
 .tag--off {
   color: var(--danger);
+}
+
+.tag--perm {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.tag--read {
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.tag--write {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.tag--all {
+  color: #52525b;
+  background: #f4f4f5;
 }
 
 .btn--sm {

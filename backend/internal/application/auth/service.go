@@ -73,6 +73,7 @@ type KeyView struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	Scopes     []string   `json:"scopes"`
+	Permission string     `json:"permission"`
 	Prefix     string     `json:"prefix"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -109,12 +110,13 @@ func toKeyView(k *apikey.APIKey, now time.Time) KeyView {
 		scopes = append(scopes, s.String())
 	}
 	v := KeyView{
-		ID:        string(k.ID()),
-		Name:      k.Name(),
-		Scopes:    scopes,
-		Prefix:    k.Prefix(),
-		Expired:   k.Expired(now),
-		CreatedAt: k.CreatedAt(),
+		ID:         string(k.ID()),
+		Name:       k.Name(),
+		Scopes:     scopes,
+		Permission: string(k.Permission()),
+		Prefix:     k.Prefix(),
+		Expired:    k.Expired(now),
+		CreatedAt:  k.CreatedAt(),
 	}
 	if k.HasExpiry() {
 		t := k.ExpiresAt()

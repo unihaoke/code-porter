@@ -15,6 +15,7 @@ import (
 
 	"github.com/codeporter/code-porter/internal/application/port"
 	"github.com/codeporter/code-porter/internal/domain/model"
+	"github.com/codeporter/code-porter/internal/domain/task"
 	"github.com/codeporter/code-porter/pkg/apperr"
 )
 
@@ -136,8 +137,33 @@ func (a *CLIAdapter) HealthCheck(ctx context.Context) error {
 // promptPlaceholder 提示词在参数模板中的占位符。
 const promptPlaceholder = "{{prompt}}"
 
+// 任务权限 → CLI 权限模式/沙箱参数的硬映射常量。
+//
+// Claude Code（--permission-mode）：
+//
+//	plan             只读计划模式：不写文件、不执行命令（read）
+//	acceptEdits      自动接受工作区文件编辑，其余操作仍被拒绝（write）
+//	bypassPermissions 全部放开（all，沿用 yaml 配置，默认值）
+//
+// Codex（--sandbox + --ask-for-approval）：
+//
+//	read-only / never       完全只读，越界操作直接拒绝而非挂起（read）
+//	workspace-write / never 仅工作区可写，越界拒绝（write）
+//	all 时不传沙箱参数，保持 codex exec 自身默认行为不变。
+const (
+	claudePermissionRead  = "plan"
+	claudePermissionWrite = "acceptEdits"
+
+	codexSandboxRead   = "read-only"
+	codexSandboxWrite  = "workspace-write"
+	codexApprovalNever = "never"
+)
+
 // buildArgs 拼装最终 argv：展开占位符并追加派生参数。
-func (a *CLIAdapter) buildArgs(prompt string) []string {
+//
+// perm 是任务携带的权限上限，对支持的工具做硬强制（优先级高于 yaml 中的
+// permission_mode 配置——配置只能给 all 放行，不能把 read 任务放宽）。
+func (a *CLIAdapter) buildArgs(prompt string, perm task.Permission) []string {
 	args := make([]string, 0, len(a.cli.Args)+8)
 	for _, raw := range a.cli.Args {
 		if strings.Contains(raw, promptPlaceholder) {
@@ -153,13 +179,36 @@ func (a *CLIAdapter) buildArgs(prompt string) []string {
 	if a.cli.Model != "" {
 		args = append(args, "--model", a.cli.Model)
 	}
-	if a.cli.PermissionMode != "" {
-		args = append(args, "--permission-mode", a.cli.PermissionMode)
+
+	permissionMode := a.cli.PermissionMode
+	var hardSandbox []string
+	switch perm {
+	case task.PermissionRead, task.PermissionWrite:
+		switch a.model {
+		case model.ClaudeCode, model.CodeBuddy:
+			if perm == task.PermissionRead {
+				permissionMode = claudePermissionRead
+			} else {
+				permissionMode = claudePermissionWrite
+			}
+		case model.Codex:
+			// codex 不认 --permission-mode，改用 sandbox 表达；沙箱参数追加在最后。
+			permissionMode = ""
+			sandbox := codexSandboxWrite
+			if perm == task.PermissionRead {
+				sandbox = codexSandboxRead
+			}
+			hardSandbox = []string{"--sandbox", sandbox, "--ask-for-approval", codexApprovalNever}
+		}
+	}
+	if permissionMode != "" {
+		args = append(args, "--permission-mode", permissionMode)
 	}
 	if a.cli.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(a.cli.MaxTurns))
 	}
 	args = append(args, a.cli.ExtraArgs...)
+	args = append(args, hardSandbox...)
 	return args
 }
 
@@ -174,6 +223,10 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 			a.model.String()+" cli command is not configured")
 	}
 	prompt := buildPrompt(req)
+	perm := req.Permission
+	if perm == "" {
+		perm = task.PermissionAll
+	}
 
 	// 工作目录必须存在，否则 cmd.Start() 报的错很难看懂。
 	// 显式校验并给出可操作的提示。
@@ -192,11 +245,12 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 	// 刚启动的 CLI 进程会立刻被杀掉（表现为永远拿不到任何输出）。
 	runCtx, cancel := context.WithTimeout(ctx, a.cfg.RequestTimeout)
 
-	args := a.buildArgs(prompt)
+	args := a.buildArgs(prompt, perm)
 	a.log.Info("cli invoke start",
 		port.F("command", a.cfg.Command),
 		port.F("args", len(args)),
 		port.F("work_dir", a.cfg.WorkDir),
+		port.F("permission", perm.String()),
 		port.F("prompt_len", len(prompt)))
 
 	cmd := exec.CommandContext(runCtx, a.cfg.Command, args...)

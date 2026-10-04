@@ -238,9 +238,42 @@ type AgentConfig struct {
 	Direct     DirectConfig     `yaml:"direct"`
 	Health     HealthConfig     `yaml:"health"`
 	MCP        mcp.Config       `yaml:"mcp"`
+	// Bots 本地直连 IM 平台的机器人配置（飞书长连接，无需网关与公网域名）。
+	Bots BotsConfig `yaml:"bots"`
 	// Secrets AI 密钥等敏感配置，写入 yaml 后以环境变量注入 MCP 子进程。
 	Secrets SecretsConfig `yaml:"secrets"`
 	Log     LogConfig     `yaml:"log"`
+}
+
+// BotsConfig 本地 IM 机器人配置。
+//
+// 机器人运行在 Agent 进程内：飞书官方 SDK 建立出站 WebSocket 长连接接收消息，
+// 收到后直接调用本机 MCP/CLI 执行，再通过 OpenAPI 回复——任务不经过网关队列。
+type BotsConfig struct {
+	Feishu FeishuBotConfig `yaml:"feishu"`
+}
+
+// FeishuBotConfig 飞书企业自建应用机器人配置（仅需 App ID / App Secret）。
+//
+// 前置条件（飞书开放平台控制台）：
+//  1. 企业自建应用开启「机器人」能力；
+//  2. 事件订阅选择「使用长连接接收事件」并添加 im.message.receive_v1；
+//  3. 发布版本并允许机器人进群/被私聊。
+type FeishuBotConfig struct {
+	// Enabled 是否启用飞书机器人。
+	Enabled bool `yaml:"enabled"`
+	// AppID / AppSecret 企业自建应用凭证；AppSecret 也可用环境变量 FEISHU_APP_SECRET 注入。
+	AppID string `yaml:"app_id"`
+	// AppSecret 应用密钥；建议通过环境变量注入，写入 yaml 时文件权限为 0600。
+	AppSecret string `yaml:"app_secret"`
+	// Model 处理消息使用的本地 AI 工具，空 = claude-code。
+	Model string `yaml:"model"`
+	// MentionOnly 群聊中仅响应 @机器人 的消息（私聊不受限）；默认开启。
+	MentionOnly bool `yaml:"mention_only"`
+	// Ack 是否先回复一条「已收到，处理中」（长任务体验）；默认开启。
+	Ack bool `yaml:"ack"`
+	// SystemPrompt 附加在每条消息前的系统提示（可选）。
+	SystemPrompt string `yaml:"system_prompt"`
 }
 
 // SecretsConfig AI 密钥等敏感配置。
@@ -373,7 +406,10 @@ func defaultAgentConfig() *AgentConfig {
 			Codex:      mcp.AdapterConfig{Enabled: false, Command: "codex"},
 		},
 		Secrets: SecretsConfig{},
-		Log:     LogConfig{Level: "info"},
+		Bots: BotsConfig{
+			Feishu: FeishuBotConfig{Enabled: false, MentionOnly: true, Ack: true},
+		},
+		Log: LogConfig{Level: "info"},
 	}
 }
 

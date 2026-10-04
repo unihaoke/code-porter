@@ -73,8 +73,15 @@ func runGUI(configPath string) error {
 		chkDirect *walk.CheckBox
 		spinConc  *walk.NumberEdit
 		inWorkDir *walk.LineEdit
-		btnTest   *walk.PushButton
-		logEdit   *walk.TextEdit
+
+		chkFeishu        *walk.CheckBox
+		inFeishuAppID    *walk.LineEdit
+		inFeishuSecret   *walk.LineEdit
+		chkFeishuMention *walk.CheckBox
+		cmbFeishuModel   *walk.ComboBox
+
+		btnTest *walk.PushButton
+		logEdit *walk.TextEdit
 	)
 
 	var svc *Service
@@ -92,6 +99,16 @@ func runGUI(configPath string) error {
 		cfg.Direct.Enabled = chkDirect.Checked()
 		cfg.WorkerPool.MaxConcurrency = int(spinConc.Value())
 		cfg.MCP.WorkDir = strings.TrimSpace(inWorkDir.Text())
+		// 飞书机器人（GUI 管理字段）。
+		cfg.Bots.Feishu.Enabled = chkFeishu.Checked()
+		cfg.Bots.Feishu.AppID = strings.TrimSpace(inFeishuAppID.Text())
+		cfg.Bots.Feishu.AppSecret = inFeishuSecret.Text()
+		cfg.Bots.Feishu.MentionOnly = chkFeishuMention.Checked()
+		if m := cmbFeishuModel.Text(); m == "自动（claude-code）" {
+			cfg.Bots.Feishu.Model = ""
+		} else {
+			cfg.Bots.Feishu.Model = m
+		}
 		// MCP.Env 是运行时从 secrets 派生的，不持久化到 yaml。
 		cfg.MCP.Env = nil
 	}
@@ -267,6 +284,29 @@ func runGUI(configPath string) error {
 					},
 				},
 			},
+			GroupBox{
+				Title:  "飞书机器人（可选：长连接直连，无需公网域名）",
+				Layout: Grid{Columns: 2, Spacing: 8, Margins: Margins{Left: 10, Top: 10, Right: 10, Bottom: 10}},
+				Children: []Widget{
+					CheckBox{AssignTo: &chkFeishu, Text: "启用飞书机器人（消息直接在本机处理并回复）",
+						Checked: cfg.Bots.Feishu.Enabled, ColumnSpan: 2},
+					Label{Text: "App ID:"},
+					LineEdit{AssignTo: &inFeishuAppID, Text: cfg.Bots.Feishu.AppID},
+					Label{Text: "App Secret:"},
+					LineEdit{AssignTo: &inFeishuSecret, Text: cfg.Bots.Feishu.AppSecret, PasswordMode: true},
+					Label{Text: "处理模型:"},
+					ComboBox{AssignTo: &cmbFeishuModel, Editable: false,
+						Value: feishuModelLabel(cfg.Bots.Feishu.Model),
+						Model: []string{"自动（claude-code）", "claude-code", "trae", "codebuddy", "codex"}},
+					CheckBox{AssignTo: &chkFeishuMention, Text: "群聊中仅响应 @机器人 的消息（私聊始终响应）",
+						Checked: cfg.Bots.Feishu.MentionOnly, ColumnSpan: 2},
+					Label{Text: ""},
+					Label{
+						Text: "前置：飞书开放平台企业自建应用开启「机器人」能力，事件订阅选择" +
+							"「使用长连接接收事件」并添加 im.message.receive_v1，然后发布版本。",
+					},
+				},
+			},
 			Composite{
 				Layout: HBox{Spacing: 8},
 				Children: []Widget{
@@ -331,4 +371,12 @@ func runGUI(configPath string) error {
 
 	mw.Run()
 	return nil
+}
+
+// feishuModelLabel 配置中的模型值到 GUI 下拉文案的映射（空值=自动）。
+func feishuModelLabel(m string) string {
+	if m == "" {
+		return "自动（claude-code）"
+	}
+	return m
 }

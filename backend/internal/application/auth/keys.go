@@ -9,7 +9,11 @@ import (
 )
 
 // CreateKey 创建秘钥。明文秘钥只在本返回值中出现一次。
-func (s *Service) CreateKey(ctx context.Context, actor *user.User, name string, scopes []string, expiresAt *time.Time) (*CreatedKeyResult, error) {
+//
+// permission 为通过该秘钥下发任务的文件操作权限上限（read/write/all），
+// 空串按 all 处理；非法值返回领域校验错误。
+func (s *Service) CreateKey(ctx context.Context, actor *user.User, name string, scopes []string,
+	permission string, expiresAt *time.Time) (*CreatedKeyResult, error) {
 	if actor == nil {
 		return nil, errInvalidCredentials
 	}
@@ -18,14 +22,19 @@ func (s *Service) CreateKey(ctx context.Context, actor *user.User, name string, 
 		return nil, err
 	}
 	scopeList := parseScopes(scopes)
+	perm := apikey.Permission(permission)
+	if perm == "" {
+		perm = apikey.PermissionAll
+	}
 	k, err := apikey.NewKey(apikey.Spec{
-		UserID:    actor.ID(),
-		Name:      name,
-		Scopes:    scopeList,
-		KeyHash:   s.deps.Secrets.Hash(secret),
-		Prefix:    prefixOf(secret),
-		ExpiresAt: expiresAt,
-		Now:       s.deps.Clock.Now(),
+		UserID:     actor.ID(),
+		Name:       name,
+		Scopes:     scopeList,
+		Permission: perm,
+		KeyHash:    s.deps.Secrets.Hash(secret),
+		Prefix:     prefixOf(secret),
+		ExpiresAt:  expiresAt,
+		Now:        s.deps.Clock.Now(),
 	})
 	if err != nil {
 		return nil, err
