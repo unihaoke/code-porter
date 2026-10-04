@@ -1,48 +1,59 @@
-# CodePorter Gateway 配置
+# CodePorter Gateway 配置（多租户账号体系）
+# 环境变量（MYSQL_DSN / AUTH_SESSION_TTL，详见 .env.example）非空时覆盖本文件。
+
 server:
   addr: ":9022"
   read_timeout: 30s
-  write_timeout: 10m      # SSE 长连接需要较大的写超时
+  # SSE 长连接需要较大的写超时（前端对话流式输出）
+  write_timeout: 10m
   idle_timeout: 2m
   shutdown_timeout: 20s
-  # 网关对外可访问地址，用于生成机器人回调 URL 提示（不影响监听）
+  # 网关对外可访问地址，用于机器人回调 URL 提示（不影响监听），必须是公网可达的 https 地址
   public_addr: "http://127.0.0.1:9022"
 
-security:
-  # 对外调用的 API Key（建议至少配置一个）
-  api_keys:
-    - "sk-codeporter-demo-key"
-  # 本地 Agent 的鉴权令牌
-  agent_tokens:
-    - "change-me-agent-token"
-  # 网页管理端令牌；留空则回落到第一个 api_key
-  admin_token: "change-me-admin-token"
+database:
+  # MySQL DSN；推荐用环境变量 MYSQL_DSN 注入，避免把密码写进配置文件
+  # 形如：codeporter:密码@tcp(mysql:3306)/codeporter?parseTime=true&charset=utf8mb4
+  dsn: "codeporter:codeporter@tcp(127.0.0.1:3306)/codeporter?parseTime=true&charset=utf8mb4"
+  max_open_conns: 20
+  max_id_conns: 5
+  conn_max_lifetime: 30m
 
-# 网页控制台（frontend 构建产物托管）
+auth:
+  # 网页登录会话有效期（小时/天均可：720h、168h、30d）
+  session_ttl: 168h
+
+# 本地客户端（agent）不做静态引导：用户在控制台创建秘钥后，
+# 客户端凭秘钥 + 自动生成的实例 ID 接入，网关自动注册。
+
+# IM 机器人（飞书 / 企业微信）——多租户：每个机器人归属创建者
+bot:
+  # 旧 bots.json 一次性迁移到 MySQL 后改名 bots.json.migrated
+  store_file: "data/bots.json"
+  default_model: "claude-code"
+  reply_timeout: 10m
+
+# 网页控制台（前端构建产物托管）
 web:
   enabled: true
   static_dir: "web/dist"
 
-# IM 机器人（飞书 / 企业微信）
-bot:
-  store_file: "data/bots.json"   # 机器人配置持久化文件（容器内已挂载卷）
-  default_model: "claude-code"
-  reply_timeout: 10m
+log:
+  level: info
 
 task:
-  max_retry: 2             # 失败重试次数，超过进入死信队列
-  lock_timeout: 60s        # 单次执行的任务锁时长，超时自动回收
-  ttl: 10m                 # 任务整体存活时长
-  queue_max_len: 512       # 单 Agent 私有队列最大长度，满则返回 429
-  request_timeout: 5m      # 非流式请求最长等待时间
-  stream_idle_timeout: 2m  # 流式连接最长空闲时间
-  mcp_timeout: 3m          # 下发给 Agent 的本地 MCP 调用超时
-  log_prompt: false        # 是否记录完整 prompt（默认关闭，避免源码外泄）
+  max_retry: 2
+  lock_timeout: 60s
+  ttl: 10m
+  queue_max_len: 512
+  request_timeout: 5m
+  stream_idle_timeout: 2m
+  mcp_timeout: 3m
 
 rate_limit:
-  qps: 10                  # 单 API Key 每秒请求数，0 表示不限
+  qps: 10
   burst: 20
-  max_inflight: 512        # 网关全局最大在途请求数
+  max_inflight: 512
 
 lifecycle:
   lock_sweep_interval: 5s
@@ -51,12 +62,3 @@ lifecycle:
   retention_interval: 5m
   task_retention: 30m
   agent_heartbeat_timeout: 30s
-
-# MVP 单用户单 Agent：一个网关绑定一台本地 PC
-agent:
-  id: "local-pc"
-  name: "My PC"
-  token: "change-me-agent-token"
-
-log:
-  level: info

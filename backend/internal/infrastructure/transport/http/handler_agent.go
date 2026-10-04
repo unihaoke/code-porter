@@ -191,7 +191,7 @@ func (h *AgentHandlers) WebSocket(w http.ResponseWriter, r *http.Request) {
 		h.log.Error("websocket upgrade failed", port.F("err", err.Error()))
 		return
 	}
-	if err := h.registry.MarkOnline(r.Context(), ag.ID()); err != nil {
+	if err := h.registry.MarkOnline(r.Context(), ag.OwnerID(), ag.ID()); err != nil {
 		h.log.Warn("mark agent online failed", port.F("err", err.Error()))
 	}
 }

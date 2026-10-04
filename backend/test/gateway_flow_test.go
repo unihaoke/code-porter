@@ -12,6 +12,7 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 	"github.com/codeporter/code-porter/internal/infrastructure/broker"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
 	"github.com/codeporter/code-porter/internal/infrastructure/persistence/memory"
@@ -38,9 +39,10 @@ func newBundle(t *testing.T, policy gatewayapp.TaskPolicy) *bundle {
 	queueRepo := memory.NewTaskQueueRepository()
 	eventBroker := broker.NewMemoryBroker()
 
-	registry := gatewayapp.NewAgentRegistry(agentRepo, queueRepo, clock, log, "local-pc", policy)
-	if _, err := registry.Ensure(context.Background(), "local-pc", "My PC", "agent-token"); err != nil {
-		t.Fatalf("ensure agent: %v", err)
+	registry := gatewayapp.NewAgentRegistry(agentRepo, queueRepo, clock, log, policy)
+	// TODO(T15): 端到端用例将整体改为「建用户→登录→秘钥接入」的多租户链路。
+	if _, err := registry.AuthenticateAndRegister(context.Background(), user.SeedAdminID, "local-pc", "My PC"); err != nil {
+		t.Fatalf("register agent: %v", err)
 	}
 	ack := gatewayapp.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy)
 	pull := gatewayapp.NewPullTasksUseCase(taskRepo, queueRepo, registry, clock, log, policy)
@@ -68,6 +70,57 @@ func submitCmd(mode task.DeliveryMode) gatewayapp.SubmitTaskCommand {
 		Messages: []task.Message{{Role: "user", Content: "帮我找出这段代码的内存泄漏"}},
 		Mode:     mode,
 		Stream:   false,
+	}
+}
+
+// TestTenantIsolationFlow 多租户任务路由：属主只能把任务下发给自己的实例。
+func TestTenantIsolationFlow(t *testing.T) {
+	b := newBundle(t, basePolicy())
+	ctx := context.Background()
+	ownerB := user.ID("usr_bob")
+
+	// B 还没有任何实例 → 503。
+	_, err := b.submit.Execute(ctx, gatewayapp.SubmitTaskCommand{
+		OwnerID:  ownerB,
+		Model:    model.ClaudeCode,
+		Messages: []task.Message{{Role: "user", Content: "hi"}},
+		Mode:     task.ModePull,
+	})
+	if apperr.CodeOf(err) != apperr.CodeUnavailable {
+		t.Fatalf("owner B no agents -> unavailable, got %v", err)
+	}
+
+	// B 自注册一台实例。
+	if _, err := b.registry.AuthenticateAndRegister(ctx, ownerB, "agt_bob1", "bob-pc"); err != nil {
+		t.Fatalf("register bob agent: %v", err)
+	}
+	// B 指定 A 的实例（种子 admin 的 local-pc）→ 404。
+	_, err = b.submit.Execute(ctx, gatewayapp.SubmitTaskCommand{
+		OwnerID:  ownerB,
+		AgentID:  "local-pc",
+		Model:    model.ClaudeCode,
+		Messages: []task.Message{{Role: "user", Content: "hi"}},
+		Mode:     task.ModePull,
+	})
+	if apperr.CodeOf(err) != apperr.CodeNotFound {
+		t.Fatalf("cross-tenant explicit -> not_found, got %v", err)
+	}
+	// B 不指定实例（仅 1 台）→ 自动路由到自己的实例并入队。
+	res, err := b.submit.Execute(ctx, gatewayapp.SubmitTaskCommand{
+		OwnerID:  ownerB,
+		Model:    model.ClaudeCode,
+		Messages: []task.Message{{Role: "user", Content: "hi"}},
+		Mode:     task.ModePull,
+	})
+	if err != nil {
+		t.Fatalf("owner B auto-route: %v", err)
+	}
+	defer res.Close()
+	if n, _ := b.queueRepo.Len(ctx, "agt_bob1"); n != 1 {
+		t.Fatalf("task should be queued on agt_bob1, got %d", n)
+	}
+	if n, _ := b.queueRepo.Len(ctx, "local-pc"); n != 0 {
+		t.Fatalf("seed admin queue must stay empty, got %d", n)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/model"
+	"github.com/codeporter/code-porter/internal/domain/user"
 )
 
 // ID 任务唯一标识。
@@ -43,7 +44,9 @@ var ErrBadLockToken = apperr.New(apperr.CodeConflict, "invalid task lock token")
 
 // Spec 创建任务所需的全部输入。
 type Spec struct {
-	AgentID     agent.ID
+	AgentID agent.ID
+	// OwnerID 归属用户（租户隔离依据，必须与目标 Agent 的属主一致）。
+	OwnerID     user.ID
 	Model       model.Model
 	Request     Request
 	Mode        DeliveryMode
@@ -59,6 +62,7 @@ type Spec struct {
 type Task struct {
 	id          ID
 	agentID     agent.ID
+	ownerID     user.ID
 	model       model.Model
 	request     Request
 	mode        DeliveryMode
@@ -93,6 +97,9 @@ func NewTask(spec Spec) (*Task, error) {
 	if spec.AgentID == "" {
 		return nil, apperr.Wrap(apperr.CodeInvalidParam, "agent id is required", nil)
 	}
+	if spec.OwnerID == "" {
+		return nil, apperr.Wrap(apperr.CodeInvalidParam, "task owner is required", nil)
+	}
 	if spec.Model == "" {
 		return nil, apperr.Wrap(apperr.CodeInvalidParam, "model is required", nil)
 	}
@@ -114,6 +121,7 @@ func NewTask(spec Spec) (*Task, error) {
 	return &Task{
 		id:          NewID(),
 		agentID:     spec.AgentID,
+		ownerID:     spec.OwnerID,
 		model:       spec.Model,
 		request:     spec.Request,
 		mode:        spec.Mode,
@@ -136,6 +144,9 @@ func (t *Task) ID() ID { return t.id }
 
 // AgentID 归属 Agent。
 func (t *Task) AgentID() agent.ID { return t.agentID }
+
+// OwnerID 归属用户（租户）。
+func (t *Task) OwnerID() user.ID { return t.ownerID }
 
 // Model 目标本地 AI 工具。
 func (t *Task) Model() model.Model { return t.model }

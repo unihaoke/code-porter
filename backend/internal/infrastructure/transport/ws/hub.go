@@ -83,6 +83,17 @@ func (h *Hub) ConnCount() int {
 	return len(h.conns)
 }
 
+// Disconnect 主动关闭指定实例的连接（用户删除/秘钥吊销时回收在线连接）。
+// 关闭动作幂等：连接断开时读循环会自行 unregister。
+func (h *Hub) Disconnect(agentID string) {
+	h.mu.RLock()
+	c, ok := h.conns[agentID]
+	h.mu.RUnlock()
+	if ok {
+		c.Close()
+	}
+}
+
 // Push 通过长连接推送任务。
 func (h *Hub) Push(ctx context.Context, agentID string, dispatch port.TaskDispatch) error {
 	h.mu.RLock()

@@ -24,8 +24,29 @@ func shellHint(t target, archiveName, binName, confName string) (unpack, run, la
 	return unpack, run, lang
 }
 
+// windowsGUIHint 返回 Windows 客户端的「双击运行」提示；非 Windows 返回空串。
+func windowsGUIHint(t target, binName string) string {
+	if t.goos != "windows" {
+		return ""
+	}
+	return "\n> **Windows 用户：直接双击 `" + binName + "` 即可。**\n" +
+		"> 它是原生窗口客户端（GUI 子系统），双击**不会**弹出黑色命令行窗口；\n" +
+		"> 在窗口里填好网关地址与令牌，点「保存并启动」即可。\n" +
+		"> 需要看实时日志或后台静默运行时，在 PowerShell 里执行：\n" +
+		"> `.\\" + binName + " -console -config configs\\agent.yaml`\n"
+}
+
+// verifyHint 返回「验证」步骤的命令。GUI 子系统没有可用的 stdout，
+// 因此 Windows 客户端改用「窗口内日志」来验证，而不是 -version。
+func verifyHint(t target, binName string) string {
+	if t.goos == "windows" {
+		return "双击 `" + binName + "`，在窗口下方的日志区看到 `connected` / `pull` 即表示已连上网关。"
+	}
+	return fence("bash", binName+" -version")
+}
+
 func agentReadme(t target, relVersion, binName, archiveName string) string {
-	unpack, run, lang := shellHint(t, archiveName, binName, "agent.yaml")
+	unpack, run, lang := shellHint(t, archiveName, binName, "configs/agent.yaml")
 	return fmt.Sprintf(`# CodePorter LocalAgent %s
 
 平台：%s（%s/%s）
@@ -33,7 +54,7 @@ func agentReadme(t target, relVersion, binName, archiveName string) string {
 运行在**你的开发机**上：主动向网关发起出站连接，拉取任务，调用本机已安装的
 AI 编码工具（Trae / Claude Code / CodeBuddy / Codex）执行，再把结果回传。
 本机不监听任何端口，外部无法主动访问你的机器。
-
+%s
 ---
 
 ## 1. 前置条件
@@ -47,7 +68,7 @@ AI 编码工具（Trae / Claude Code / CodeBuddy / Codex）执行，再把结果
 
 ## 3. 修改配置
 
-编辑解压出来的 `+"`agent.yaml`"+`，只需替换这两项：
+编辑解压出来的 `+"`configs/agent.yaml`"+`，只需替换这两项：
 
 `+fence("yaml", `agent:
   id: "your-agent-id"          # 管理员分配
@@ -58,15 +79,17 @@ gateway:
 
 其余字段（并发数、轮询间隔、直连开关、MCP 适配器）保持默认即可。
 
+> 也支持用 `+"`.env`"+` 覆盖：`+"`AGENT_ID`"+` / `+"`AGENT_TOKEN`"+` / `+"`AGENT_GATEWAY_ADDR`"+` /
+> `+"`ANTHROPIC_API_KEY`"+` 等，`+"`.env`"+` 中的值优先于本文件，留空则回退本文件。
+> 把 `+"`.env`"+` 放在 exe 同级或 `+"`configs/`"+` 下均可（程序会从配置目录逐级向上查找）。
+
 ## 4. 启动
 
 `+fence(lang, run)+`
 
 ## 5. 验证
 
-`+fence(lang, binName+" -version")+`
-
-输出示例：`+"`codeporter-agent "+relVersion+"`"+`
+`+verifyHint(t, binName)+`
 
 看到日志中出现 `+"`connected`"+` / `+"`pull`"+` 即表示已与网关建立连接。
 
@@ -75,13 +98,13 @@ gateway:
 ## 安全说明
 
 - 客户端**只出站、不监听**，无需开放任何入站端口或配置路由器端口映射
-- `+"`agent.yaml`"+` 中含凭据，请勿提交到版本库
+- `+"`configs/agent.yaml`"+` 中含凭据，请勿提交到版本库
 - 生产环境请把 `+"`gateway.addr`"+` 配成 `+"`https://`"+`，仅在自签证书调试时临时开启 `+"`insecure_tls: true`"+`
-`, relVersion, t.label, t.goos, t.goarch)
+`, relVersion, t.label, t.goos, t.goarch, windowsGUIHint(t, binName))
 }
 
 func gatewayReadme(t target, relVersion, binName, archiveName string) string {
-	unpack, run, lang := shellHint(t, archiveName, binName, "gateway.yaml")
+	unpack, run, lang := shellHint(t, archiveName, binName, "configs/gateway.yaml")
 	return fmt.Sprintf(`# CodePorter Gateway %s
 
 平台：%s（%s/%s）
@@ -97,7 +120,7 @@ WebSocket 直连两条通路把任务下发到开发机上的 LocalAgent。
 
 ## 2. 修改配置
 
-编辑 `+"`gateway.yaml`"+`，至少替换以下占位值：
+编辑 `+"`configs/gateway.yaml`"+`，至少替换以下占位值：
 
 `+fence("yaml", `server:
   addr: ":9022"

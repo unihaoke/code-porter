@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/codeporter/code-porter/internal/application/port"
@@ -21,8 +22,12 @@ import (
 type Config struct {
 	// BaseURL 网关地址，如 https://gw.example.com。
 	BaseURL string
-	// AgentToken Agent 鉴权令牌。
-	AgentToken string
+	// Key 控制台签发的连接秘钥（cp_ 前缀，含 agent scope）。
+	Key string
+	// InstanceID 本机实例 ID（agt_ 前缀）。
+	InstanceID string
+	// Name 机器名（首次注册使用）。
+	Name string
 	// Timeout 单次 HTTP 请求超时。
 	Timeout time.Duration
 	// InsecureTLS 是否跳过证书校验（自签证书场景）。
@@ -51,6 +56,19 @@ func NewGatewayClient(cfg Config) *GatewayClient {
 			Timeout:   cfg.Timeout,
 			Transport: newTransport(cfg.InsecureTLS),
 		},
+	}
+}
+
+// setAgentHeaders 为 /agent/* 请求注入鉴权秘钥与实例身份。
+func (c *GatewayClient) setAgentHeaders(req *http.Request) {
+	if c.cfg.Key != "" {
+		req.Header.Set("X-Agent-Token", c.cfg.Key)
+	}
+	if c.cfg.InstanceID != "" {
+		req.Header.Set("X-Agent-ID", c.cfg.InstanceID)
+	}
+	if c.cfg.Name != "" {
+		req.Header.Set("X-Agent-Name", c.cfg.Name)
 	}
 }
 
@@ -109,12 +127,10 @@ func (c *GatewayClient) doJSON(ctx context.Context, method, url string, body any
 		return apperr.Wrap(apperr.CodeInternal, "build request failed", err)
 	}
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
+	if strings.Contains(url, "/agent/") {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.cfg.AgentToken != "" {
-		req.Header.Set("Authorization", "Agent-Token "+c.cfg.AgentToken)
-	}
+	c.setAgentHeaders(req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

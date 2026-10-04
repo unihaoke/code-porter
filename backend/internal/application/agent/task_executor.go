@@ -21,6 +21,34 @@ type TaskExecutor struct {
 	reporter ResultReporter
 	log      port.Logger
 	policy   Policy
+	// OnEvent 任务执行事件回调（可选），供 GUI / IPC 层做进度展示。
+	// 纯旁路：回调 panic 或阻塞都不应影响任务执行，故调用点均做保护。
+	OnEvent func(TaskEvent)
+}
+
+// TaskEvent 任务执行阶段事件。
+type TaskEvent struct {
+	TaskID  string        `json:"task_id"`
+	Model   string        `json:"model"`
+	Phase   string        `json:"phase"` // start | success | failed
+	Elapsed time.Duration `json:"-"`
+	Detail  string        `json:"detail,omitempty"`
+}
+
+// 任务事件阶段常量。
+const (
+	TaskPhaseStart   = "start"
+	TaskPhaseSuccess = "success"
+	TaskPhaseFailed  = "failed"
+)
+
+// emit 触发事件回调，隔离回调自身可能带来的问题。
+func (e *TaskExecutor) emit(ev TaskEvent) {
+	if e.OnEvent == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	go e.OnEvent(ev)
 }
 
 // NewTaskExecutor 构造执行器。
@@ -51,6 +79,23 @@ func (e *TaskExecutor) ExecuteWith(ctx context.Context, d port.TaskDispatch, rep
 
 	// 单任务兜底：无论发生什么都不允许把 worker 打崩。
 	var err error
+
+	// 结束事件 defer 必须先于下面的 panic 恢复 defer 注册：
+	// defer 是 LIFO，先注册者后执行，这样它才能读到 panic 恢复里赋的 err，
+	// 否则任务 panic 时会被误报成 success。
+	defer func() {
+		phase := TaskPhaseSuccess
+		detail := ""
+		if err != nil {
+			phase = TaskPhaseFailed
+			detail = err.Error()
+		}
+		e.emit(TaskEvent{
+			TaskID: d.TaskID, Model: string(d.Model),
+			Phase: phase, Elapsed: time.Since(start), Detail: detail,
+		})
+	}()
+
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
@@ -65,6 +110,10 @@ func (e *TaskExecutor) ExecuteWith(ctx context.Context, d port.TaskDispatch, rep
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	e.emit(TaskEvent{
+		TaskID: d.TaskID, Model: string(d.Model), Phase: TaskPhaseStart,
+	})
 
 	m, perr := model.Parse(d.Model)
 	if perr != nil {

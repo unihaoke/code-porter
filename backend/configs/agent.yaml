@@ -1,64 +1,56 @@
-# CodePorter LocalAgent 配置（运行在开发者本机）
+# CodePorter LocalAgent 配置
+# 多租户版本：客户端凭「连接秘钥」接入，不再使用静态 token。
+# 密钥建议通过环境变量 AGENT_KEY 注入（见 .env.example），本文件只存非敏感配置。
+
 agent:
-  id: "local-pc"                 # 需与网关侧 agent.id 一致
-  token: "change-me-agent-token" # 需与网关侧 agent.token 一致
+  # id 留空：首次启动自动生成 agt_<随机> 并写回本文件（每台机器唯一，请勿手动复制到其他机器）
+  id: ""
+  # name 留空：首次启动自动取主机名
+  name: ""
+  # 连接秘钥：在网关控制台「秘钥」页创建（勾选 agent 权限）后粘贴。
+  # 生产环境建议留空并通过环境变量 AGENT_KEY 注入，避免写入 yaml。
+  key: ""
 
 gateway:
-  addr: "http://127.0.0.1:9022"  # 生产环境请用 https://your-domain
+  addr: "http://127.0.0.1:9022"
   timeout: 30s
-  insecure_tls: false            # 自签证书场景可临时置 true
+  insecure_tls: false
 
 pull:
-  interval_min: 500ms            # 有任务时的最快轮询间隔
-  interval_max: 3000ms           # 长时间空闲后的最大轮询间隔
+  interval_min: 500ms
+  interval_max: 3s
   backoff_factor: 1.6
 
 worker_pool:
-  max_concurrency: 2             # 最大同时执行的 AI 任务数（保护 IDE，默认 2）
-  queue_size: 4                  # 本地内部等待队列长度
+  max_concurrency: 2
+  queue_size: 4
 
 direct:
-  enabled: true                  # SSE 直连模式（低延迟交互式对话）
+  enabled: true
   heartbeat_interval: 20s
   pong_timeout: 60s
   reconnect_min: 1s
   reconnect_max: 30s
 
 health:
-  interval: 15s                  # 本机健康上报间隔
+  interval: 15s
 
 mcp:
-  health_timeout: 5s
-  # 每个适配器对应本机已安装并登录的 AI 编码工具
+  work_dir: ""
   trae:
     enabled: true
-    command: "trae-mcp"          # Trae MCP Server 启动命令
-    args: []
-    work_dir: ""
-    prompt_argument: "prompt"
-    request_timeout: 3m
-    startup_timeout: 30s
+    command: "trae-mcp"
   claude_code:
     enabled: true
     command: "claude"
-    args: ["mcp", "serve"]
-    prompt_argument: "prompt"
-    request_timeout: 3m
-    startup_timeout: 30s
   codebuddy:
     enabled: true
     command: "codebuddy-mcp"
-    args: []
-    prompt_argument: "prompt"
-    request_timeout: 3m
-    startup_timeout: 30s
   codex:
     enabled: false
     command: "codex"
-    args: ["mcp"]
-    prompt_argument: "prompt"
-    request_timeout: 3m
-    startup_timeout: 30s
+
+secrets: {}
 
 log:
   level: info

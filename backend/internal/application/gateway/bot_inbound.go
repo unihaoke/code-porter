@@ -108,6 +108,7 @@ func (u *BotInboundUseCase) Handle(ctx context.Context, msg bot.InboundMessage) 
 	}
 
 	submitted, err := u.submit.Execute(ctx, SubmitTaskCommand{
+		OwnerID:  b.OwnerID(),
 		APIKeyID: "bot:" + string(b.ID()),
 		AgentID:  agentIDOrEmpty(b.AgentID()),
 		Model:    m,

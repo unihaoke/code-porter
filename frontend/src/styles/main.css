@@ -245,6 +245,42 @@ tbody tr:hover {
   color: var(--brand);
 }
 
+.alert.success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+}
+
+.btn--ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: #f4f6f9;
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 50;
+}
+
+.modal {
+  width: 460px;
+  max-width: calc(100vw - 40px);
+  max-height: 86vh;
+  overflow: auto;
+  padding: 22px;
+}
+
+.modal-wide {
+  width: 560px;
+}
+
 .row {
   display: flex;
   gap: 10px;

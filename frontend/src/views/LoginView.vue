@@ -7,15 +7,26 @@ const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
 
-const token = ref('')
-const rememberHint = ref(false)
+const username = ref('')
+const password = ref('')
+const loading = ref(false)
+const error = ref('')
 
 async function submit() {
-  rememberHint.value = true
-  const ok = await auth.login(token.value)
-  if (ok) {
+  if (!username.value || !password.value) {
+    error.value = '请输入用户名和密码'
+    return
+  }
+  loading.value = true
+  error.value = ''
+  try {
+    await auth.login(username.value.trim(), password.value)
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
     router.push(redirect)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '登录失败'
+  } finally {
+    loading.value = false
   }
 }
 </script>
@@ -26,32 +37,31 @@ async function submit() {
       <div class="head">
         <span class="logo">CP</span>
         <h2>CodePorter 控制台</h2>
+        <p class="muted">多租户本地 AI 中继 · 账号登录</p>
       </div>
-      <p class="muted">
-        输入网关配置中的 <code class="mono">security.admin_token</code> 登录。
-        该令牌同时是网页对话、机器人管理的调用凭据。
-      </p>
-
-      <div v-if="auth.error" class="alert error">{{ auth.error }}</div>
-
       <form @submit.prevent="submit">
         <div class="field">
-          <label for="token">管理端令牌</label>
+          <label for="username">用户名</label>
+          <input id="username" v-model="username" autocomplete="username" placeholder="admin" />
+        </div>
+        <div class="field">
+          <label for="password">密码</label>
           <input
-            id="token"
-            v-model="token"
+            id="password"
+            v-model="password"
             type="password"
-            placeholder="change-me-admin-token"
             autocomplete="current-password"
+            placeholder="首次部署默认 admin123"
+            @keyup.enter="submit"
           />
         </div>
-        <button class="btn primary" style="width: 100%; justify-content: center" :disabled="auth.loading">
-          {{ auth.loading ? '登录中…' : '登录' }}
+        <div v-if="error" class="alert error">{{ error }}</div>
+        <button class="btn primary" style="width: 100%; justify-content: center" :disabled="loading">
+          {{ loading ? '登录中…' : '登录' }}
         </button>
       </form>
-
-      <p v-if="rememberHint && !auth.authed" class="muted" style="margin-top: 14px; font-size: 12px">
-        令牌会保存在浏览器本地，退出登录即清除。
+      <p class="muted tip">
+        默认账号 admin / admin123，登录后请立即在右上角用户菜单修改密码。
       </p>
     </div>
   </div>
@@ -59,42 +69,44 @@ async function submit() {
 
 <style scoped>
 .wrap {
-  min-height: 100%;
+  min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 40px 20px;
+  background: linear-gradient(135deg, #f6f8fc 0%, #eef2f8 100%);
 }
 
-.login {
+.card.login {
   width: 100%;
   max-width: 380px;
+  padding: 28px;
 }
 
 .head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
+  text-align: center;
+  margin-bottom: 20px;
 }
 
 .head h2 {
+  margin: 10px 0 6px;
   font-size: 18px;
 }
 
 .logo {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
   background: var(--brand);
   color: #fff;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  font-size: 14px;
+  font-weight: 800;
 }
 
-p.muted {
-  font-size: 13px;
-  margin: 0 0 18px;
+.tip {
+  margin-top: 14px;
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.6;
 }
 </style>

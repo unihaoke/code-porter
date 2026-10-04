@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/codeporter/code-porter/internal/domain/agent"
+	"github.com/codeporter/code-porter/internal/domain/user"
 )
 
 // TaskRepository 任务仓储端口（出站接口，由基础设施层实现）。
@@ -16,6 +17,8 @@ type TaskRepository interface {
 	Find(ctx context.Context, id ID) (*Task, error)
 	// FindByAgent 查询某个 Agent 的任务（statuses 为空表示全部）。
 	FindByAgent(ctx context.Context, agentID agent.ID, statuses ...Status) ([]*Task, error)
+	// FindByOwner 查询某用户（租户）名下的任务（statuses 为空表示全部）。
+	FindByOwner(ctx context.Context, ownerID user.ID, statuses ...Status) ([]*Task, error)
 	// FindByStatus 按状态批量查询，供生命周期守护扫描。
 	FindByStatus(ctx context.Context, statuses ...Status) ([]*Task, error)
 	// Delete 删除任务（仅用于死信清理/运维）。

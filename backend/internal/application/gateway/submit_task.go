@@ -7,12 +7,15 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 	"github.com/codeporter/code-porter/pkg/apperr"
 	"github.com/codeporter/code-porter/pkg/id"
 )
 
 // SubmitTaskCommand 外部调用方提交任务的命令。
 type SubmitTaskCommand struct {
+	// OwnerID 租户（秘钥属主 / 登录用户）。
+	OwnerID user.ID
 	// APIKeyID 调用方 Key 标识（限流与审计）。
 	APIKeyID string
 	// AgentID 目标 Agent，空表示使用默认 Agent。
@@ -101,7 +104,13 @@ func (u *SubmitTaskUseCase) Execute(ctx context.Context, cmd SubmitTaskCommand) 
 		return nil, apperr.New(apperr.CodeInvalidParam, "model is required")
 	}
 
-	ag, err := u.registry.Resolve(ctx, cmd.AgentID)
+	// TODO(T10): OwnerID 由鉴权中间件强制注入；过渡期 HTTP 层尚未全部接入，缺省挂种子 admin。
+	ownerID := cmd.OwnerID
+	if ownerID == "" {
+		ownerID = user.SeedAdminID
+	}
+
+	ag, err := u.registry.ResolveForOwner(ctx, ownerID, cmd.AgentID)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +124,7 @@ func (u *SubmitTaskUseCase) Execute(ctx context.Context, cmd SubmitTaskCommand) 
 	now := u.clock.Now()
 	t, err := task.NewTask(task.Spec{
 		AgentID:     ag.ID(),
+		OwnerID:     ownerID,
 		Model:       cmd.Model,
 		Mode:        decision.Mode,
 		Stream:      cmd.Stream,

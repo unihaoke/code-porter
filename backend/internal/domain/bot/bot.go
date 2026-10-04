@@ -6,6 +6,7 @@ import (
 
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 	"github.com/codeporter/code-porter/pkg/apperr"
 	"github.com/codeporter/code-porter/pkg/id"
 )
@@ -22,9 +23,14 @@ func NewID() ID { return ID(id.New("bot_")) }
 // ErrBotNotFound 机器人不存在。
 var ErrBotNotFound = apperr.New(apperr.CodeNotFound, "bot not found")
 
+// ErrOwnerRequired 机器人必须归属某个用户。
+var ErrOwnerRequired = apperr.New(apperr.CodeInvalidParam, "bot owner is required")
+
 // Spec 创建 / 更新机器人的输入。
 type Spec struct {
-	Name string
+	// OwnerID 归属用户（租户）。
+	OwnerID user.ID
+	Name    string
 	// Channel IM 渠道。
 	Channel Channel
 	// Model 该机器人默认使用的本地 AI 工具，为空时取全局默认。
@@ -54,6 +60,7 @@ type Spec struct {
 // Bot 机器人聚合根。
 type Bot struct {
 	id           ID
+	ownerID      user.ID
 	name         string
 	channel      Channel
 	enabled      bool
@@ -82,8 +89,12 @@ func NewBot(spec Spec) (*Bot, error) {
 	if spec.Channel == "" {
 		return nil, apperr.New(apperr.CodeInvalidParam, "bot channel is required")
 	}
+	if spec.OwnerID == "" {
+		return nil, ErrOwnerRequired
+	}
 	b := &Bot{
 		id:        NewID(),
+		ownerID:   spec.OwnerID,
 		createdAt: now,
 		updatedAt: now,
 	}
@@ -146,6 +157,9 @@ func (b *Bot) Clone() *Bot {
 
 // ID 标识。
 func (b *Bot) ID() ID { return b.id }
+
+// OwnerID 归属用户（租户）。
+func (b *Bot) OwnerID() user.ID { return b.ownerID }
 
 // Name 名称。
 func (b *Bot) Name() string { return b.name }
@@ -213,12 +227,15 @@ func (b *Bot) CanReceive() bool {
 // CanReply 是否能向群里推送结果：启用且配置了出站 Webhook。
 func (b *Bot) CanReply() bool { return b.enabled && b.webhookURL != "" }
 
-// Rewrite 回填持久化恢复出来的 ID 与时间戳。
+// Rewrite 回填持久化恢复出来的 ID、归属与时间戳。
 //
 // 仅供仓储反序列化使用：领域构造函数总是生成新 ID，而加载历史数据必须保留原 ID。
-func (b *Bot) Rewrite(id ID, createdAt, updatedAt time.Time) {
+func (b *Bot) Rewrite(id ID, ownerID user.ID, createdAt, updatedAt time.Time) {
 	if id != "" {
 		b.id = id
+	}
+	if ownerID != "" {
+		b.ownerID = ownerID
 	}
 	if !createdAt.IsZero() {
 		b.createdAt = createdAt

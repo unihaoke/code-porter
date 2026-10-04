@@ -11,6 +11,7 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/bot"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 )
 
 // BotHandlers 机器人配置管理接口（网页管理端调用）。
@@ -90,6 +91,7 @@ func (h *BotHandlers) view(b *bot.Bot) map[string]any {
 	}
 	return map[string]any{
 		"id":            string(b.ID()),
+		"owner_id":      string(b.OwnerID()),
 		"name":          b.Name(),
 		"channel":       b.Channel().String(),
 		"channel_name":  b.Channel().DisplayName(),
@@ -125,9 +127,14 @@ func maskSecret(url string) string {
 	return prefix + tail[:4] + "****" + tail[len(tail)-2:]
 }
 
-// List 列出全部机器人。
+// actor 取当前登录用户（路由已由会话鉴权中间件保护）。
+func (h *BotHandlers) actor(r *http.Request) *user.User {
+	return userFromContext(r.Context())
+}
+
+// List 列出机器人。
 func (h *BotHandlers) List(w http.ResponseWriter, r *http.Request) {
-	list, err := h.admin.List(r.Context())
+	list, err := h.admin.List(r.Context(), h.actor(r))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -154,7 +161,8 @@ func (h *BotHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	if dto.Enabled == nil {
 		spec.Enabled = true
 	}
-	b, err := h.admin.Create(r.Context(), gateway.CreateCommand{Spec: spec})
+	// 归属由用例按操作者强制写入。
+	b, err := h.admin.Create(r.Context(), h.actor(r), spec)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -164,7 +172,7 @@ func (h *BotHandlers) Create(w http.ResponseWriter, r *http.Request) {
 
 // Get 查询单个机器人。
 func (h *BotHandlers) Get(w http.ResponseWriter, r *http.Request) {
-	b, err := h.admin.Get(r.Context(), bot.ID(r.PathValue("id")))
+	b, err := h.admin.Get(r.Context(), h.actor(r), bot.ID(r.PathValue("id")))
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -184,7 +192,7 @@ func (h *BotHandlers) Update(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	b, err := h.admin.Update(r.Context(), gateway.UpdateCommand{ID: bot.ID(r.PathValue("id")), Spec: spec})
+	b, err := h.admin.Update(r.Context(), h.actor(r), bot.ID(r.PathValue("id")), spec)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -194,7 +202,7 @@ func (h *BotHandlers) Update(w http.ResponseWriter, r *http.Request) {
 
 // Delete 删除机器人。
 func (h *BotHandlers) Delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.admin.Delete(r.Context(), bot.ID(r.PathValue("id"))); err != nil {
+	if err := h.admin.Delete(r.Context(), h.actor(r), bot.ID(r.PathValue("id"))); err != nil {
 		writeErr(w, err)
 		return
 	}
@@ -210,7 +218,7 @@ func (h *BotHandlers) Toggle(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	b, err := h.admin.SetEnabled(r.Context(), bot.ID(r.PathValue("id")), req.Enabled)
+	b, err := h.admin.SetEnabled(r.Context(), h.actor(r), bot.ID(r.PathValue("id")), req.Enabled)
 	if err != nil {
 		writeErr(w, err)
 		return

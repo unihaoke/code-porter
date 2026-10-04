@@ -1,58 +1,71 @@
-import type { Agent, Bot, BotInput, ModelInfo, Overview, TaskItem } from '@/types'
+// 管理端 fetch 封装：所有请求自动带会话 Bearer 令牌，401 时清会话并回登录页。
 
-// 管理端令牌存本地，避免刷新页面反复登录。
-const TOKEN_KEY = 'codeporter_admin_token'
+import type { Agent, Bot, ModelInfo, Overview, TaskItem } from '@/types'
+
+const TOKEN_KEY = 'codeporter_session'
+const USER_KEY = 'codeporter_user'
 
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? ''
 }
 
-export function setToken(token: string): void {
+export function setSession(token: string, user: unknown): void {
   localStorage.setItem(TOKEN_KEY, token)
+  localStorage.setItem(USER_KEY, JSON.stringify(user))
 }
 
-export function clearToken(): void {
+export function clearSession(): void {
   localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(USER_KEY)
 }
 
-// ApiError 携带后端返回的结构化错误码。
 export class ApiError extends Error {
   code: string
   status: number
+  agents?: { id: string; name: string; status: string }[]
 
-  constructor(message: string, code: string, status: number) {
+  constructor(message: string, code: string, status: number, agents?: unknown) {
     super(message)
     this.code = code
     this.status = status
+    if (Array.isArray(agents)) {
+      this.agents = agents as { id: string; name: string; status: string }[]
+    }
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   if (!headers.has('Content-Type') && init.body) {
     headers.set('Content-Type', 'application/json')
   }
   const token = getToken()
   if (token) {
-    headers.set('X-Admin-Token', token)
+    headers.set('Authorization', `Bearer ${token}`)
   }
   const resp = await fetch(path, { ...init, headers })
   if (!resp.ok) {
-    let message = `请求失败（HTTP ${resp.status}）`
-    let code = 'http_error'
+    let body: Record<string, unknown> = {}
     try {
-      const body = await resp.json()
-      if (body?.error?.message) {
-        message = body.error.message
-        code = body.error.code ?? code
-      }
+      body = await resp.json()
     } catch {
-      // 非 JSON 响应（如 nginx 错误页）保留默认提示
+      /* 非 JSON 响应 */
     }
+    const err = body?.error as { message?: string; code?: string } | undefined
     if (resp.status === 401) {
-      clearToken()
+      clearSession()
+      // 登录接口自身的 401 不跳转（页面要展示错误）
+      if (path !== '/api/auth/login' && !window.location.pathname.startsWith('/login')) {
+        window.location.assign('/login')
+      }
     }
-    throw new ApiError(message, code, resp.status)
+    const agents = (body as { agents?: unknown }).agents
+    throw new ApiError(
+      err?.message ?? `请求失败（HTTP ${resp.status}）`,
+      err?.code ?? 'http_error',
+      resp.status,
+      agents,
+    )
   }
   if (resp.status === 204) {
     return undefined as T
@@ -60,32 +73,30 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await resp.json()) as T
 }
 
+// 控制台/业务接口的便捷方法（返回结构与后端 handler 对齐）。
 export const api = {
-  login(token: string) {
-    return request<{ ok: boolean; auth_required: boolean }>('/api/auth/login', {
-      method: 'POST',
-      headers: { 'X-Admin-Token': token },
-    })
-  },
+  get: <T>(path: string) => request<T>(path),
+  post: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) }),
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 
+  // ---- 控制台数据 ----
   overview: () => request<Overview>('/api/overview'),
-
   agents: () => request<{ agents: Agent[] }>('/api/agents'),
-
-  tasks: (limit = 50) => request<{ tasks: TaskItem[]; total: number }>(`/api/tasks?limit=${limit}`),
-
+  tasks: (query = '') => request<{ tasks: TaskItem[]; total: number }>(`/api/tasks${query ? `?${query}` : ''}`),
   models: () => request<{ models: ModelInfo[] }>('/api/models'),
 
+  // ---- 机器人（路径保持不变，鉴权改为会话） ----
   bots: () => request<{ bots: Bot[] }>('/api/bots'),
-  bot: (id: string) => request<{ bot: Bot }>(`/api/bots/${id}`),
-  createBot: (input: BotInput) =>
-    request<{ bot: Bot }>('/api/bots', { method: 'POST', body: JSON.stringify(input) }),
-  updateBot: (id: string, input: Partial<BotInput>) =>
-    request<{ bot: Bot }>(`/api/bots/${id}`, { method: 'PUT', body: JSON.stringify(input) }),
-  deleteBot: (id: string) => request<{ deleted: boolean }>(`/api/bots/${id}`, { method: 'DELETE' }),
+  createBot: (body: unknown) => request<{ bot: Bot }>('/api/bots', { method: 'POST', body: JSON.stringify(body) }),
+  updateBot: (id: string, body: unknown) =>
+    request<{ bot: Bot }>(`/api/bots/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   toggleBot: (id: string, enabled: boolean) =>
     request<{ bot: Bot }>(`/api/bots/${id}/toggle`, {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+  deleteBot: (id: string) => request<{ deleted: boolean }>(`/api/bots/${id}`, { method: 'DELETE' }),
 }

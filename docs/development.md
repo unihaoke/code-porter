@@ -18,7 +18,7 @@ make init          # go mod tidy + npm install
 # 后端
 make build-backend       # 编译 gateway 与 agent 到 backend/bin/
 make run-gateway         # 运行网关（:9022，同时托管控制台）
-make run-agent           # 运行本地 Agent
+make run-agent           # 运行本地 Agent（无界面命令行模式，等价于 -console）
 make test                # go test ./...
 make vet fmt             # 静态检查 + 格式化
 
@@ -78,6 +78,27 @@ go test ./... -count=1
 新增 HTTP 接口时，建议补端到端用例；手工验证时用 `curl --noproxy '*'`
 （本机回环访问要绕过沙箱代理，否则可能返回 502）。
 
+## 本地测试与数据库
+
+`go test ./...` **不依赖 MySQL**：领域/应用/HTTP 层测试全部使用内存仓储
+（users/api_keys/sessions/agents 均有内存实现），可直接运行：
+
+```bash
+cd backend
+go test ./...            # 全量单测（无需数据库）
+go test ./... -run TestAuth -v
+```
+
+需要真实 MySQL 验证迁移与 MySQL 仓储时，设置 DSN 守卫变量后运行（无 DSN 自动 skip）：
+
+```bash
+$env:CODEPORTER_TEST_MYSQL_DSN='user:pass@tcp(127.0.0.1:3306)/codeporter_test?parseTime=true'  # PowerShell
+CODEPORTER_TEST_MYSQL_DSN='...' go test ./internal/infrastructure/persistence/mysql/ -v
+```
+
+本地启动网关仍需要 MySQL：最快方式是在仓库根目录 `docker compose up -d mysql`，
+然后用 `MYSQL_DSN=codeporter:codeporter@tcp(127.0.0.1:3306)/codeporter?parseTime=true go run ./cmd/gateway`。
+
 ## 手工冒烟示例
 
 ```bash
@@ -85,13 +106,19 @@ cd backend
 go build -o .smoke/gw.exe ./cmd/gateway
 mkdir -p .smoke && ./.smoke/gw.exe -config configs/gateway.yaml &
 
-# 控制台登录
-curl --noproxy '*' -X POST http://127.0.0.1:9022/api/auth/login \
-  -H 'X-Admin-Token: change-me-admin-token'
+# 控制台登录（默认 admin/admin123），保存 token
+TOKEN=$(curl --noproxy '*' -s -X POST http://127.0.0.1:9022/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' | sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+# 创建一个秘钥（agent+api 双权限）
+curl --noproxy '*' -X POST http://127.0.0.1:9022/api/keys \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"smoke","scopes":["agent","api"]}'
 
 # 创建一个飞书机器人
 curl --noproxy '*' -X POST http://127.0.0.1:9022/api/bots \
-  -H 'X-Admin-Token: change-me-admin-token' -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"测试","channel":"feishu","webhook_url":"https://open.feishu.cn/open-apis/bot/v2/hook/demo"}'
 
 # 模拟飞书的 URL 验证

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { streamChat } from '@/api/chat'
-import type { ChatMessage, ModelInfo } from '@/types'
+import type { Agent, ChatMessage, ModelInfo } from '@/types'
 
 interface Bubble extends ChatMessage {
   pending?: boolean
@@ -16,11 +16,32 @@ const status = ref('')
 const model = ref('')
 const mode = ref('pull')
 const models = ref<ModelInfo[]>([])
+const agents = ref<Agent[]>([])
+const selectedAgent = ref('')
 const error = ref('')
 
 let controller: AbortController | null = null
 
-const canSend = computed(() => input.value.trim().length > 0 && !streaming.value)
+const onlineAgents = computed(() => agents.value.filter((a) => a.status !== 'offline'))
+const canSend = computed(
+  () => input.value.trim().length > 0 && !streaming.value && onlineAgents.value.length > 0,
+)
+
+async function loadAgents() {
+  try {
+    const res = await api.agents()
+    agents.value = res.agents ?? []
+    // 只有一台在线实例时自动选择；多台时保持用户手动选择
+    if (!selectedAgent.value && onlineAgents.value.length === 1) {
+      selectedAgent.value = onlineAgents.value[0].id
+    }
+    if (selectedAgent.value && !agents.value.some((a) => a.id === selectedAgent.value)) {
+      selectedAgent.value = ''
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '加载客户端列表失败'
+  }
+}
 
 async function loadModels() {
   try {
@@ -56,6 +77,7 @@ function send() {
       messages: history,
       model: model.value || undefined,
       mode: mode.value,
+      agent_id: selectedAgent.value || undefined,
     },
     {
       onMeta: (meta) => {
@@ -78,6 +100,8 @@ function send() {
         messages.value[index].content = messages.value[index].content || message
         streaming.value = false
         status.value = ''
+        // 多实例/实例变化后刷新选择器
+        loadAgents()
       },
     },
     controller.signal,
@@ -112,7 +136,10 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(loadModels)
+onMounted(() => {
+  loadModels()
+  loadAgents()
+})
 </script>
 
 <template>
@@ -123,6 +150,19 @@ onMounted(loadModels)
         <p>请求会下发到你本机的 AI 编码工具执行，结果实时回流到此处。</p>
       </div>
       <div class="row">
+        <select
+          v-model="selectedAgent"
+          :disabled="onlineAgents.length === 0"
+          style="width: 200px"
+          :title="onlineAgents.length === 0 ? '没有在线客户端：请在本机用秘钥启动 CodePorter 客户端' : '选择目标客户端'"
+        >
+          <option value="" disabled>
+            {{ onlineAgents.length === 0 ? '无在线客户端' : '选择客户端（自动）' }}
+          </option>
+          <option v-for="a in agents" :key="a.id" :value="a.id">
+            {{ a.name || a.id }} · {{ a.status === 'online' ? '在线' : a.status === 'busy' ? '忙碌' : '离线' }}
+          </option>
+        </select>
         <select v-model="model" style="width: 150px">
           <option value="">自动（默认模型）</option>
           <option v-for="m in models" :key="m.model" :value="m.model">
@@ -133,10 +173,17 @@ onMounted(loadModels)
           <option value="pull">队列模式</option>
           <option value="direct">直连模式</option>
         </select>
+        <button class="btn" @click="loadAgents">刷新客户端</button>
         <button class="btn" @click="clearChat">清空</button>
       </div>
     </div>
 
+    <div v-if="onlineAgents.length === 0" class="alert info">
+      没有在线客户端：请在你的电脑上用「秘钥」页生成的秘钥启动 CodePorter 本地客户端（agent.key / AGENT_KEY）。
+    </div>
+    <div v-else-if="onlineAgents.length > 1 && !selectedAgent" class="alert info">
+      检测到 {{ onlineAgents.length }} 台在线客户端，请在上方选择目标机器。
+    </div>
     <div v-if="error" class="alert error">{{ error }}</div>
 
     <div class="card chat">

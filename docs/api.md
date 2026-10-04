@@ -6,21 +6,83 @@
 
 | 接口族 | 鉴权方式 |
 |---|---|
-| `/v1/*`、`/admin/*` | `Authorization: Bearer <api_key>` |
-| `/agent/*` | `X-Agent-Token: <agent_token>` |
-| `/api/*` | `X-Admin-Token: <admin_token>`（也接受 `Authorization: Bearer` 或 `?token=`） |
-| `/webhook/*` | 由渠道自己的签名 / Token 校验，不使用网关鉴权 |
+| `/v1/*` | `Authorization: Bearer <秘钥明文>`（秘钥需含 `api` scope），也接受 `X-API-Key` |
+| `/agent/*` | `X-Agent-Token: <秘钥明文>`（秘钥需含 `agent` scope）+ `X-Agent-ID: <实例ID>` + 可选 `X-Agent-Name`；秘钥也可放 `Authorization: Bearer` |
+| `/api/*`（除登录/webhook） | `Authorization: Bearer <会话令牌>`（登录后获得） |
+| `/api/users/*`、`/admin/*` | 同上，且要求 **admin 角色** |
+| `POST /api/auth/login`、`/webhook/*`、`/healthz` | 无需鉴权（webhook 由渠道签名校验） |
 
-`admin_token` 未配置时回落为第一个 `api_key`。
+鉴权失败返回 401；已登录但权限不足（如 member 调 admin 接口、秘钥缺少所需 scope）返回 403。
 
 错误响应统一为 OpenAI 风格：
 
 ```json
-{ "error": { "message": "invalid admin token", "type": "unauthorized", "code": "unauthorized" } }
+{ "error": { "message": "用户名或密码错误", "type": "unauthorized", "code": "unauthorized" } }
 ```
 
-错误码与 HTTP 状态码映射：`invalid_param`→400、`unauthorized`→401、`not_found`→404、
-`queue_full`/`rate_limited`→429、`timeout`→504、`not_connected`/`unavailable`→503、其余→500。
+多实例未指定目标时返回 409，并附带可选实例清单：
+
+```json
+{
+  "error": { "message": "multiple agents available, please specify target agent", "code": "conflict" },
+  "agents": [{ "id": "agt_ab12", "name": "work-laptop", "status": "online" }]
+}
+```
+
+错误码与 HTTP 状态码映射：`invalid_param`→400、`unauthorized`→401、`forbidden`→403、
+`not_found`→404、`conflict`（含多实例）→409、`queue_full`/`rate_limited`→429、
+`timeout`→504、`not_connected`/`unavailable`→503、其余→500。
+
+---
+
+## 账号与会话
+
+### `POST /api/auth/login`
+
+```json
+{ "username": "admin", "password": "admin123" }
+```
+
+响应（会话令牌请只保存在浏览器本地，不要再展示给他人）：
+
+```json
+{ "token": "服务端签发的不透明会话令牌", "expires_at": "2026-10-11T12:00:00Z",
+  "user": { "id": "usr_admin_seed", "username": "admin", "role": "admin", "status": "active" } }
+```
+
+### `POST /api/auth/logout` / `GET /api/auth/me`
+
+登出使当前会话立即失效；`/me` 返回当前登录用户信息。
+
+### `POST /api/me/password`
+
+```json
+{ "old_password": "...", "new_password": "..." }
+```
+
+成功后**除当前会话外的其他登录会话全部失效**；管理员重置他人密码同理。
+
+---
+
+## 用户与秘钥（管理接口）
+
+| 方法与路径 | 角色 | 说明 |
+|---|---|---|
+| `GET /api/users` | admin | 用户列表 |
+| `POST /api/users` | admin | `{username,password,role}`，role=admin/member |
+| `DELETE /api/users/{id}` | admin | 删除用户（秘钥/会话/实例/机器人外键级联；不能删自己） |
+| `POST /api/users/{id}/reset-password` | admin | `{password}`，并踢掉该用户全部会话 |
+| `GET /api/keys` `POST /api/keys` `DELETE /api/keys/{id}` | 本人 | 秘钥自助管理 |
+| `GET /api/users/{id}/keys` `DELETE /api/users/{id}/keys/{keyId}` | admin | 代管指定用户秘钥 |
+
+创建秘钥请求：
+
+```json
+{ "name": "work-laptop", "scopes": ["agent", "api"], "expires_at": "2026-12-31T23:59:59Z" }
+```
+
+`scopes` 缺省为两个都含；`expires_at` 缺省（空串）= 永久。响应中的 `secret`（`cp_` 开头）
+**仅本次返回**，之后任何接口都无法再读到明文；列表只返回 `prefix`、scope、有效期与最近使用时间。
 
 ---
 
@@ -38,21 +100,17 @@
 }
 ```
 
-请求头：`x-codeporter-mode: pull | direct`（默认 `pull`）。
+请求头：
+
+- `x-codeporter-mode: pull | direct`（默认 `pull`）；
+- `x-codeporter-agent: <实例ID>`（可选）。不携带时按租户自动路由：名下 0 台→503，
+  1 台→自动选择，多于 1 台→409（响应体附实例清单）。
 
 `stream=false` 返回完整的 `chat.completion`；`stream=true` 返回 SSE（`data: {...}` + `data: [DONE]`）。
 
 ---
 
 ## 网页控制台接口
-
-### `POST /api/auth/login`
-
-校验管理端令牌，前端据此决定是否保存。
-
-```json
-{ "ok": true, "auth_required": true }
-```
 
 ### `POST /api/chat`
 
@@ -61,6 +119,7 @@
   "messages": [{ "role": "user", "content": "重构这个函数" }],
   "model": "claude-code",
   "mode": "pull",
+  "agent_id": "agt_ab12",
   "stream": true
 }
 ```
@@ -205,6 +264,10 @@ data: {"content":"建议提取函数并补充单元测试"}
 | POST | `/agent/health` | 上报本机健康与 MCP 可用性 |
 | GET | `/agent/ws` | WebSocket 直连（直连模式） |
 
+> 以上接口统一要求请求头携带 `X-Agent-Token: <秘钥>`（agent scope）、
+> `X-Agent-ID: <实例ID>`（pull 也可继续用 `agentId` 查询参数）、可选 `X-Agent-Name`。
+> 首次见到新实例 ID 时网关自动注册到秘钥属主名下；同名实例 ID 若属于其他用户返回 403。
+
 ACK 请求体：
 
 ```json
@@ -222,4 +285,4 @@ ACK 请求体：
 ## 运维接口
 
 - `GET /healthz` —— `{"ok":true,"service":"codeporter-gateway","ws_conns":1}`
-- `GET /admin/agents`、`GET /admin/queues`（需 API Key）
+- `GET /admin/agents`、`GET /admin/queues`（需 admin 会话令牌）

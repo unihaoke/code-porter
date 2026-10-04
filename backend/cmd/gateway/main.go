@@ -1,7 +1,7 @@
 // Command gateway 启动 CodePorter 公网网关服务。
 //
-// 职责：接收外部 OpenAI 兼容请求 → 按通路（Pull 队列 / SSE 直连）下发任务 →
-// 汇聚本地 AI 输出并以 SSE 或 JSON 形式回传给调用方。
+// 职责：多租户账号/秘钥鉴权 → 接收 OpenAI 兼容请求 → 按通路（Pull 队列 / SSE 直连）
+// 下发任务到属主自己的本地客户端 → 汇聚输出回传调用方。
 package main
 
 import (
@@ -14,18 +14,24 @@ import (
 	"syscall"
 	"time"
 
+	authsvc "github.com/codeporter/code-porter/internal/application/auth"
 	gatewayapp "github.com/codeporter/code-porter/internal/application/gateway"
 	"github.com/codeporter/code-porter/internal/application/port"
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/model"
+	"github.com/codeporter/code-porter/internal/domain/user"
 	infrabot "github.com/codeporter/code-porter/internal/infrastructure/bot"
 	"github.com/codeporter/code-porter/internal/infrastructure/broker"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
 	"github.com/codeporter/code-porter/internal/infrastructure/persistence/memory"
+	mysqlpersist "github.com/codeporter/code-porter/internal/infrastructure/persistence/mysql"
+	"github.com/codeporter/code-porter/internal/infrastructure/security"
 	gwhttp "github.com/codeporter/code-porter/internal/infrastructure/transport/http"
 	"github.com/codeporter/code-porter/internal/infrastructure/transport/ws"
 	"github.com/codeporter/code-porter/pkg/version"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 func main() {
@@ -57,12 +63,55 @@ func run(configPath string) error {
 
 	log := logging.New(os.Stdout, logging.ParseLevel(cfg.Log.Level))
 
+	// 旧配置/环境变量只告警，绝不回退生效。
+	for _, msg := range cfg.LegacyWarnings() {
+		log.Warn("deprecated config: " + msg)
+	}
+	for _, msg := range config.DeprecatedEnvWarnings(configPath) {
+		log.Warn(msg)
+	}
+
+	if cfg.Database.DSN == "" {
+		return errors.New("database.dsn 未配置：请在 configs/gateway.yaml 配置 database.dsn 或设置 MYSQL_DSN 环境变量")
+	}
+
 	// --- 基础设施（Driven Adapters）---
+	// 运行时态仍在内存（任务队列/事件 broker/在线状态），账号体系在 MySQL。
 	taskRepo := memory.NewTaskRepository()
-	agentRepo := memory.NewAgentRepository()
 	queueRepo := memory.NewTaskQueueRepository()
 	eventBroker := broker.NewMemoryBroker()
 	clock := port.RealClock{}
+
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 60*time.Second)
+	db, err := mysqlpersist.Open(startupCtx, cfg.Database.DSN, mysqlpersist.PoolConfig{
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+	})
+	cancelStartup()
+	if err != nil {
+		return fmt.Errorf("connect mysql: %w", err)
+	}
+	defer db.Close()
+
+	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancelMigrate()
+	if err := mysqlpersist.Migrate(migrateCtx, cfg.Database.DSN, db); err != nil {
+		return fmt.Errorf("mysql migrate: %w", err)
+	}
+
+	userRepo := mysqlpersist.NewUserRepository(db)
+	keyRepo := mysqlpersist.NewAPIKeyRepository(db)
+	sessionRepo := mysqlpersist.NewSessionRepository(db)
+	agentRepo := mysqlpersist.NewAgentRepository(db)
+	botMySQLRepo := mysqlpersist.NewBotRepository(db)
+
+	// 旧版 bots.json 一次性迁移到 MySQL（空库才执行，成功后改名 .migrated）。
+	if n, err := mysqlpersist.MigrateBotsJSON(context.Background(), botMySQLRepo, cfg.Bot.StoreFile, user.SeedAdminID); err != nil {
+		log.Warn("bots.json migration failed: " + err.Error())
+	} else if n > 0 {
+		log.Info("bots migrated from legacy bots.json", port.F("count", n))
+	}
 
 	// --- 应用服务（用例编排）---
 	policy := gatewayapp.TaskPolicy{
@@ -75,17 +124,7 @@ func run(configPath string) error {
 		MCPTimeout:        cfg.Task.MCPTimeout,
 	}
 
-	registry := gatewayapp.NewAgentRegistry(agentRepo, queueRepo, clock, log,
-		agent.ID(cfg.Agent.ID), policy)
-
-	defaultAgentID := agent.ID(cfg.Agent.ID)
-	token := cfg.Agent.Token
-	if token == "" && len(cfg.Security.AgentTokens) > 0 {
-		token = cfg.Security.AgentTokens[0]
-	}
-	if _, err := registry.Ensure(context.Background(), defaultAgentID, cfg.Agent.Name, token); err != nil {
-		return fmt.Errorf("bootstrap default agent: %w", err)
-	}
+	registry := gatewayapp.NewAgentRegistry(agentRepo, queueRepo, clock, log, policy)
 
 	ackUC := gatewayapp.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy)
 	healthUC := gatewayapp.NewReportHealthUseCase(registry, clock, log, policy)
@@ -105,18 +144,39 @@ func run(configPath string) error {
 	}, log)
 
 	submitUC := gatewayapp.NewSubmitTaskUseCase(taskRepo, queueRepo, registry, eventBroker, hub, clock, log, policy)
-
-	// --- IM 机器人（飞书 / 企业微信）---
-	botRepo, err := infrabot.NewFileBotRepository(cfg.Bot.StoreFile)
-	if err != nil {
-		return fmt.Errorf("init bot repository: %w", err)
-	}
-	botAdminUC := gatewayapp.NewBotAdminUseCase(botRepo, clock, log)
 	defaultModel := model.Model(cfg.Bot.DefaultModel)
-	botInboundUC := gatewayapp.NewBotInboundUseCase(
-		botRepo, submitUC, infrabot.NewSender(10*time.Second, log),
-		defaultModel, clock, log, policy)
 	chatUC := gatewayapp.NewChatUseCase(submitUC, defaultModel, log)
+
+	authSvc := authsvc.NewService(authsvc.Deps{
+		Users:      userRepo,
+		Keys:       keyRepo,
+		Sessions:   sessionRepo,
+		Hasher:     security.NewBcryptHasher(),
+		Secrets:    security.NewSHA256Hasher(),
+		Generator:  security.NewRandomGenerator(),
+		Clock:      clock,
+		Logger:     log,
+		SessionTTL: cfg.Auth.SessionTTL,
+		AfterUserDelete: func(ctx context.Context, deletedID user.ID) {
+			ids, err := registry.EvictOwner(ctx, deletedID)
+			if err != nil {
+				log.Warn("evict owner failed", port.F("user_id", string(deletedID)), port.F("err", err.Error()))
+			}
+			for _, id := range ids {
+				hub.Disconnect(string(id))
+			}
+		},
+	})
+
+	// 默认密码告警：种子 admin 仍是 admin123 时显著提示。
+	if authSvc.IsUsingDefaultPassword(context.Background()) {
+		log.Warn("默认管理员仍在使用默认密码 admin/admin123，请立即登录后在个人菜单修改密码")
+	}
+
+	botAdminUC := gatewayapp.NewBotAdminUseCase(botMySQLRepo, registry, clock, log)
+	botInboundUC := gatewayapp.NewBotInboundUseCase(
+		botMySQLRepo, submitUC, infrabot.NewSender(10*time.Second, log),
+		defaultModel, clock, log, policy)
 
 	lifecycle := gatewayapp.NewTaskLifecycleService(taskRepo, queueRepo, registry, eventBroker, clock, log, policy,
 		gatewayapp.LifecycleConfig{
@@ -134,18 +194,20 @@ func run(configPath string) error {
 
 	server := gwhttp.NewServer(gwhttp.Deps{
 		Config:     cfg,
+		Auth:       authSvc,
 		Registry:   registry,
 		Submit:     submitUC,
+		Chat:       chatUC,
 		Pull:       pullUC,
 		Ack:        ackUC,
 		Health:     healthUC,
 		Hub:        hub,
 		QueueRepo:  queueRepo,
 		TaskRepo:   taskRepo,
-		Chat:       chatUC,
+		Users:      userRepo,
 		Bots:       botAdminUC,
 		BotInbound: botInboundUC,
-		BotRepo:    botRepo,
+		BotRepo:    botMySQLRepo,
 		Logger:     log,
 		Policy:     policy,
 	})
@@ -153,8 +215,8 @@ func run(configPath string) error {
 	log.Info("codeporter gateway starting",
 		port.F("version", version.Get().Version),
 		port.F("addr", cfg.Server.Addr),
-		port.F("agent", string(defaultAgentID)),
 		port.F("web", cfg.Web.Enabled && cfg.Web.StaticDir != ""),
+		port.F("session_ttl", cfg.Auth.SessionTTL.String()),
 		port.F("queue_max_len", policy.QueueMaxLen))
 
 	if err := server.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {

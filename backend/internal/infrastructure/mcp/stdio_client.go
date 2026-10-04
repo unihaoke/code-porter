@@ -112,6 +112,7 @@ func (c *StdioClient) Start(ctx context.Context) error {
 		return errors.New("mcp command is not configured")
 	}
 	cmd := exec.Command(c.cfg.Command, c.cfg.Args...)
+	cmd.SysProcAttr = stdioSysProcAttr()
 	cmd.Env = os.Environ()
 	for k, v := range c.cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)

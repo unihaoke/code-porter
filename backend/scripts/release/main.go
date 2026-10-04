@@ -183,6 +183,13 @@ func run(outDir, relVersion, project, build string) error {
 func buildOne(stage, outDir, product, pkg, relVersion, ldflags string, confBody []byte, t target) (artifact, error) {
 	binName := "codeporter-" + product + t.ext
 	binPath := filepath.Join(stage, product+"-"+t.goos+"-"+t.goarch+binName)
+	// Windows 上的 agent 是可双击的桌面客户端，用 GUI 子系统，双击才不会附带黑色
+	// cmd 窗口（控制台子系统程序被 Explorer 启动时会被分配一个控制台）。
+	// 仅对 agent 生效：gateway 是服务端，需保留控制台子系统，否则在终端/Docker
+	// 中会丢失 stdout 日志。
+	if product == "agent" && t.goos == "windows" {
+		ldflags += " -H windowsgui"
+	}
 	if err := goBuild(pkg, binPath, ldflags, t); err != nil {
 		return artifact{}, err
 	}
@@ -195,7 +202,9 @@ func buildOne(stage, outDir, product, pkg, relVersion, ldflags string, confBody 
 	archiveName := root + "." + t.archiveExt()
 	files := []archiveFile{
 		{name: binName, body: binBody, mode: 0o755},
-		{name: product + ".yaml", body: confBody, mode: 0o644},
+		// 配置放进 configs/ 子目录，与仓库布局及客户端默认 -config configs/<x>.yaml 一致。
+		// 否则 Windows 双击启动时找不到配置、会静默回退默认值。
+		{name: "configs/" + product + ".yaml", body: confBody, mode: 0o644},
 		{name: "README.md", body: []byte(readmeFor(product, t, relVersion, binName, archiveName)), mode: 0o644},
 	}
 	archivePath := filepath.Join(outDir, archiveName)

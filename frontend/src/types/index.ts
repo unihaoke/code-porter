@@ -59,6 +59,8 @@ export interface Agent {
   queued: number
   max_concurrency: number
   health: AgentHealth
+  owner_id?: string
+  owner?: string
 }
 
 export interface TaskItem {

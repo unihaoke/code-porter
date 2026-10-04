@@ -7,10 +7,13 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 )
 
 // ChatCommand 网页对话请求。
 type ChatCommand struct {
+	// OwnerID 租户（登录用户）。
+	OwnerID user.ID
 	// APIKeyID 调用方标识（网页端传 "web"）。
 	APIKeyID string
 	// AgentID 目标 Agent，空表示默认。
@@ -64,6 +67,7 @@ func (u *ChatUseCase) Execute(ctx context.Context, cmd ChatCommand) (*SubmitTask
 		mode = task.ModePull
 	}
 	return u.submit.Execute(ctx, SubmitTaskCommand{
+		OwnerID:     cmd.OwnerID,
 		APIKeyID:    cmd.APIKeyID,
 		AgentID:     cmd.AgentID,
 		Model:       m,

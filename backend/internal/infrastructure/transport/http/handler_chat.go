@@ -68,6 +68,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	res, err := h.chat.Execute(r.Context(), gateway.ChatCommand{
+		OwnerID:   userFromContext(r.Context()).ID(),
 		APIKeyID:  "web",
 		AgentID:   agent.ID(req.AgentID),
 		Model:     m,

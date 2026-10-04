@@ -19,8 +19,12 @@ import (
 type SessionConfig struct {
 	// BaseURL 网关地址（http/https）。
 	BaseURL string
-	// AgentToken Agent 鉴权令牌。
-	AgentToken string
+	// Key 控制台签发的连接秘钥（agent scope）。
+	Key string
+	// InstanceID 本机实例 ID。
+	InstanceID string
+	// Name 机器名。
+	Name string
 	// HeartbeatInterval 心跳（ping）间隔。
 	HeartbeatInterval time.Duration
 	// PongTimeout 等待 pong 的超时，超时判定连接已死。
@@ -68,8 +72,14 @@ func NewSession(ctx context.Context, agentID string, cfg SessionConfig) (*Sessio
 	url := wsURL(cfg.BaseURL) + "/agent/ws?agentId=" + agentID
 
 	header := http.Header{}
-	if cfg.AgentToken != "" {
-		header.Set("Authorization", "Agent-Token "+cfg.AgentToken)
+	if cfg.Key != "" {
+		header.Set("X-Agent-Token", cfg.Key)
+	}
+	if cfg.InstanceID != "" {
+		header.Set("X-Agent-ID", cfg.InstanceID)
+	}
+	if cfg.Name != "" {
+		header.Set("X-Agent-Name", cfg.Name)
 	}
 	dialer := &websocket.Dialer{
 		HandshakeTimeout:  15 * time.Second,

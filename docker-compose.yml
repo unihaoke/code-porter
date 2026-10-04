@@ -1,15 +1,41 @@
-# CodePorter — 公网 VPS 一键部署
-#
+# CodePorter 一键部署：MySQL 8 + 网关（含 Web 控制台）
 # 用法：
-#   cp .env.example .env && 编辑 .env
+#   cp .env.example .env  # 编辑数据库账号密码
 #   docker compose up -d --build
-#   docker compose logs -f gateway
-#
-# 两个服务：
-#   gateway — Go 网关（OpenAI 兼容接口、任务调度、IM 机器人回调）
-#   web     — Nginx（托管 Vue 控制台，并把 /api /v1 /agent /webhook 反代到 gateway）
+#   浏览器打开 http://<服务器IP>:9022，用 admin / admin123 登录并立即改密
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: codeporter-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codeporter}
+      MYSQL_USER: ${MYSQL_USER:-codeporter}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-codeporter}
+      TZ: Asia/Shanghai
+    command:
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-time-zone=+08:00
+    volumes:
+      - mysql-data:/var/lib/mysql
+    expose:
+      - "3306"
+    healthcheck:
+      # gateway 必须等 MySQL 可接受连接后再启动，迁移才不会失败
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-change-me-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
   gateway:
     build:
       context: .
@@ -17,15 +43,24 @@ services:
     image: codeporter/gateway:0.2.0
     container_name: codeporter-gateway
     restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
     environment:
       TZ: ${TZ:-Asia/Shanghai}
+      # 网关用业务账号连接 MySQL（parseTime 由程序强制开启，charset 默认 utf8mb4）
+      # 注意：密码若含 @ : / ? 等特殊字符，请做 URL 编码，或改用不含特殊字符的密码
+      MYSQL_DSN: "${MYSQL_USER:-codeporter}:${MYSQL_PASSWORD:-codeporter}@tcp(mysql:3306)/${MYSQL_DATABASE:-codeporter}?parseTime=true&charset=utf8mb4"
+      AUTH_SESSION_TTL: "${AUTH_SESSION_TTL:-168h}"
+      GATEWAY_ADDR: ":9022"
+      GATEWAY_PUBLIC_ADDR: "${GATEWAY_PUBLIC_ADDR:-http://127.0.0.1:9022}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      BOT_DEFAULT_MODEL: "${BOT_DEFAULT_MODEL:-claude-code}"
     volumes:
-      # 网关配置（只读挂载，改完 restart 生效）
-      - ./backend/configs/gateway.yaml:/app/configs/gateway.yaml:ro
-      # 机器人配置持久化（bots.json）
+      # 机器人配置（旧 bots.json 的迁移中转，以及未来文件型数据）
       - gateway-data:/app/data
-    expose:
-      - "9022"
+    ports:
+      - "${WEB_PORT:-80}:9022"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9022/healthz"]
       interval: 30s
@@ -33,31 +68,11 @@ services:
       start_period: 10s
       retries: 3
     logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "5"
-
-  web:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    image: codeporter/web:0.2.0
-    container_name: codeporter-web
-    restart: unless-stopped
-    depends_on:
-      gateway:
-        condition: service_healthy
-    ports:
-      # 生产环境请在前置 Nginx / Caddy 上终止 HTTPS，再把 80 转发进来
-      - "${WEB_PORT:-80}:80"
-    environment:
-      TZ: ${TZ:-Asia/Shanghai}
-    logging:
-      driver: json-file
+      driver: "json-file"
       options:
         max-size: "20m"
         max-file: "5"
 
 volumes:
+  mysql-data:
   gateway-data:

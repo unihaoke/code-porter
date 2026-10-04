@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 import type { Agent, AgentHealth } from '@/types'
 
+const auth = useAuthStore()
 const agents = ref<Agent[]>([])
 const error = ref('')
 const loading = ref(false)
@@ -72,6 +74,7 @@ onMounted(load)
       <table>
         <thead>
           <tr>
+            <th v-if="auth.isAdmin">归属</th>
             <th>节点</th>
             <th>状态</th>
             <th>心跳</th>
@@ -83,6 +86,7 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="a in agents" :key="a.id">
+            <td v-if="auth.isAdmin">{{ a.owner ?? a.owner_id ?? '—' }}</td>
             <td>
               <strong>{{ a.id }}</strong>
               <div class="muted" style="font-size: 12px">{{ a.name }}</div>
@@ -115,8 +119,8 @@ onMounted(load)
             </td>
           </tr>
           <tr v-if="!agents.length">
-            <td colspan="7" class="empty">
-              暂无节点。在开发机上运行 codeporter-agent 后会自动出现。
+            <td :colspan="auth.isAdmin ? 8 : 7" class="empty">
+              暂无节点。在开发机上用秘钥启动 CodePorter 客户端后会自动出现。
             </td>
           </tr>
         </tbody>

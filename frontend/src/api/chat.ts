@@ -37,7 +37,7 @@ export async function streamChat(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-Admin-Token': getToken(),
+      Authorization: `Bearer ${getToken()}`,
     },
     body: JSON.stringify({ ...payload, stream: true }),
     signal,
@@ -48,6 +48,15 @@ export async function streamChat(
     try {
       const body = await resp.json()
       if (body?.error?.message) message = body.error.message
+      if (resp.status === 409 && Array.isArray(body?.agents) && body.agents.length) {
+        // 多实例未选择：列出实例，交由页面提示
+        message += `（可选实例：${body.agents.map((a: { id: string }) => a.id).join('、')}）`
+      }
+      if (resp.status === 401) {
+        // 会话失效回到登录页（与普通 API 客户端保持一致）
+        localStorage.removeItem('codeporter_session')
+        if (!window.location.pathname.startsWith('/login')) window.location.assign('/login')
+      }
     } catch {
       /* 忽略解析失败 */
     }

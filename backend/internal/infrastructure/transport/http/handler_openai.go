@@ -62,11 +62,12 @@ func (h *ChatCompletionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		writeErr(w, apperr.New(apperr.CodeInvalidParam, "only POST is allowed"))
 		return
 	}
-	keyID := apiKeyIDFrom(r.Context())
+	keyID := apiKeyIDFromContext(r.Context())
 	if h.limiter != nil && !h.limiter.Allow(keyID) {
 		writeErr(w, apperr.New(apperr.CodeRateLimited, "api key qps exceeded"))
 		return
 	}
+	owner := userFromContext(r.Context())
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 	if err != nil {
@@ -94,6 +95,7 @@ func (h *ChatCompletionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	agentID := headerIgnoreCase(r, AgentHeader)
 
 	cmd := gateway.SubmitTaskCommand{
+		OwnerID:     owner.ID(),
 		APIKeyID:    keyID,
 		AgentID:     agentIDOf(agentID),
 		Model:       m,

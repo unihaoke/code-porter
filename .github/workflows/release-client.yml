@@ -1,0 +1,95 @@
+name: Release Client
+
+# 三平台客户端构建：
+#   push tag v*            -> 构建并发布到 GitHub Release
+#   workflow_dispatch      -> 只构建并上传 artifact（不建 Release）
+#
+# Windows / Linux / macOS 各用对应的官方 runner：dmg 只能在 macOS 上产出，
+# 免安装 exe 只能在 Windows 上产出，所以这里不能只靠交叉编译。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            platform: win
+            arch: x64
+            goos: windows
+            goarch: amd64
+            glob: '*.exe'
+          - name: macOS arm64
+            os: macos-latest
+            platform: mac
+            arch: arm64
+            goos: darwin
+            goarch: arm64
+            glob: '*.dmg'
+          - name: macOS x64
+            os: macos-latest
+            platform: mac
+            arch: x64
+            goos: darwin
+            goarch: amd64
+            glob: '*.dmg'
+          - name: Linux x64
+            os: ubuntu-latest
+            platform: linux
+            arch: x64
+            goos: linux
+            goarch: amd64
+            glob: '*.AppImage'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Build client
+        shell: bash
+        run: bash build-client.sh
+        env:
+          USE_CN_MIRROR: '0'
+          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # 没有 Apple 证书时不要去探测签名身份，否则 macOS 打包直接失败。
+          # 想签名就配 secrets.APPLE_CERT / APPLE_CERT_PASSWORD，并去掉这两个变量：
+          #   CSC_LINK: ${{ secrets.APPLE_CERT }}
+          #   CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CodePorter-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: client/release/${{ matrix.glob }}
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: client/release/${{ matrix.glob }}
+          fail_on_unmatched_files: true

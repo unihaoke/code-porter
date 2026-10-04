@@ -1,0 +1,40 @@
+{
+  "name": "codeporter-client",
+  "version": "0.2.0",
+  "productName": "CodePorter",
+  "description": "CodePorter 本地代理客户端（Electron 界面 + Go 核心）",
+  "author": "CodePorter",
+  "license": "MIT",
+  "private": true,
+  "main": "dist-main/src/main/index.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:core\" \"npm:dev:renderer\"",
+    "dev:core": "node scripts/build-core.mjs --watch",
+    "dev:renderer": "vite",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:builder && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --config electron-builder.config.cjs",
+    "dist:dir": "npm run build && electron-builder --dir --config electron-builder.config.cjs",
+    "dist:win": "npm run build && electron-builder --win --x64 --config electron-builder.config.cjs",
+    "dist:mac": "npm run build && electron-builder --mac --config electron-builder.config.cjs",
+    "dist:linux": "npm run build && electron-builder --linux --config electron-builder.config.cjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "build:builder": "tsc -p tsconfig.main.json"
+  },
+  "dependencies": {
+    "@electron-toolkit/preload": "^3.0.2",
+    "@electron-toolkit/utils": "^4.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "concurrently": "^9.1.2",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3",
+    "vite": "^6.4.3",
+    "vue": "^3.5.13",
+    "vue-tsc": "^2.2.10"
+  }
+}

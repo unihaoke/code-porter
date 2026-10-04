@@ -13,6 +13,7 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/bot"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 )
 
 // FileBotRepository 以 JSON 文件持久化机器人配置。
@@ -41,6 +42,7 @@ func NewFileBotRepository(path string) (*FileBotRepository, error) {
 // botDTO 机器人的持久化结构。
 type botDTO struct {
 	ID           string    `json:"id"`
+	OwnerID      string    `json:"owner_id,omitempty"`
 	Name         string    `json:"name"`
 	Channel      string    `json:"channel"`
 	Enabled      bool      `json:"enabled"`
@@ -60,6 +62,7 @@ type botDTO struct {
 func toDTO(b *bot.Bot) botDTO {
 	return botDTO{
 		ID:           string(b.ID()),
+		OwnerID:      string(b.OwnerID()),
 		Name:         b.Name(),
 		Channel:      string(b.Channel()),
 		Enabled:      b.Enabled(),
@@ -87,8 +90,14 @@ func fromDTO(d botDTO) *bot.Bot {
 	if d.CreatedAt.IsZero() {
 		d.CreatedAt = d.UpdatedAt
 	}
+	// 旧版 bots.json 没有 owner 字段：统一挂到种子 admin 名下，随后由迁移器导入 MySQL。
+	ownerID := user.ID(d.OwnerID)
+	if ownerID == "" {
+		ownerID = user.SeedAdminID
+	}
 	// 领域对象字段私有：先构造，再回填持久化的 ID 与时间戳。
 	b, err := bot.NewBot(bot.Spec{
+		OwnerID:      ownerID,
 		Name:         d.Name,
 		Channel:      bot.Channel(d.Channel),
 		Model:        model.Model(d.Model),
@@ -107,7 +116,7 @@ func fromDTO(d botDTO) *bot.Bot {
 		// 脏数据不应拖垮整个网关启动：跳过该条，对外表现为不存在。
 		return nil
 	}
-	b.Rewrite(bot.ID(d.ID), d.CreatedAt, d.UpdatedAt)
+	b.Rewrite(bot.ID(d.ID), ownerID, d.CreatedAt, d.UpdatedAt)
 	return b
 }
 
@@ -140,6 +149,20 @@ func (r *FileBotRepository) FindAll(_ context.Context) ([]*bot.Bot, error) {
 	out := make([]*bot.Bot, 0, len(r.m))
 	for _, b := range r.m {
 		out = append(out, b.Clone())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt().Before(out[j].CreatedAt()) })
+	return out, nil
+}
+
+// FindByOwner 返回某用户的全部机器人。
+func (r *FileBotRepository) FindByOwner(_ context.Context, ownerID user.ID) ([]*bot.Bot, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]*bot.Bot, 0, len(r.m))
+	for _, b := range r.m {
+		if b.OwnerID() == ownerID {
+			out = append(out, b.Clone())
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt().Before(out[j].CreatedAt()) })
 	return out, nil

@@ -12,14 +12,36 @@ infrastructure  ──▶  application  ──▶  domain
 
 | 层 | 目录 | 关键内容 |
 |---|---|---|
-| 领域 | `internal/domain/task` | `Task` 聚合（状态机 / 任务锁 / 重试 / 死信 / TTL）、`Queue` 实体、`Router` 领域服务 |
-| 领域 | `internal/domain/agent` | `Agent` 聚合（在线状态、健康快照、容量） |
-| 领域 | `internal/domain/bot` | `Bot` 聚合（渠道、凭据、启停）、入站/出站消息值对象 |
+| 领域 | `internal/domain/user` | 用户聚合（用户名规范化、bcrypt 密码哈希校验、角色/状态）、会话实体（可过期、哈希令牌） |
+| 领域 | `internal/domain/apikey` | 秘钥聚合（cp_ 明文生成、SHA-256 存储、agent/api scope、有效期） |
+| 领域 | `internal/domain/task` | `Task` 聚合（状态机 / 任务锁 / 重试 / 死信 / TTL，带 owner）、`Queue` 实体、`Router` 领域服务 |
+| 领域 | `internal/domain/agent` | `Agent` 聚合（实例身份 = owner + 实例 ID、在线状态、健康快照、容量） |
+| 领域 | `internal/domain/bot` | `Bot` 聚合（租户归属、渠道、凭据、启停）、入站/出站消息值对象 |
 | 领域 | `internal/domain/model` | 本地 AI 工具标识（路由到 MCP 适配器） |
-| 应用 | `internal/application/gateway` | 提交任务、Pull、ACK、健康上报、生命周期守护、机器人管理、机器人入站、网页对话 |
+| 应用 | `internal/application/auth` | 登录/登出/会话校验、用户管理（admin）、秘钥 CRUD、改密踢会话 |
+| 应用 | `internal/application/gateway` | 提交任务（按租户路由）、Pull、ACK、健康上报、生命周期守护、机器人管理（租户化）、机器人入站、网页对话、实例自注册/多实例路由 |
 | 应用 | `internal/application/agent` | 拉取消费者、任务执行器、直连消费者、健康上报 |
-| 应用 | `internal/application/port` | 出站端口：MCPRunner、TaskEventBroker、DirectPusher、GatewayClient、BotSender、Clock、Logger |
-| 基础设施 | `internal/infrastructure/**` | HTTP + SSE、WebSocket Hub、内存/文件仓储、令牌桶限流、MCP stdio 客户端与四适配器、IM 渠道适配、系统探测、配置加载 |
+| 应用 | `internal/application/port` | 出站端口：MCPRunner、TaskEventBroker、DirectPusher、GatewayClient、BotSender、密码哈希器/凭据生成器、Clock、Logger |
+| 基础设施 | `internal/infrastructure/**` | HTTP + SSE、WebSocket Hub、MySQL 仓储（go-sql-driver，内嵌 SQL 迁移）、内存仓储（测试用）、bcrypt/SHA-256/crypto-rand 安全组件、令牌桶限流、MCP stdio 客户端与四适配器、IM 渠道适配、系统探测、配置加载 |
+
+## 多租户与鉴权模型
+
+```
+用户 user (admin/member)
+  ├─ 1:N 秘钥 api_key（scope ∈ {agent, api}，硬删除，存 sha256）
+  ├─ 1:N 会话 session（登录签发，存 sha256，TTL 默认 168h）
+  ├─ 1:N Agent 实例 agent（实例自注册：秘钥鉴权得到 owner + X-Agent-ID）
+  ├─ 1:N 机器人 bot（从旧 bots.json 一次性迁移，挂种子 admin）
+  └─ 1:N 任务 task（运行时态在内存，按 owner 过滤）
+```
+
+- **鉴权链（Agent 接入）**：`X-Agent-Token`（秘钥）→ scope 校验得到 owner →
+  `X-Agent-ID` 实例归属注册/校验 → 注入任务链路。秘钥证明归属，实例 ID 区分机器；
+  同一把秘钥可在多台机器上使用（每台首次启动生成独立 agt_ ID）。
+- **多实例路由**：提交任务未指定实例时，名下 0 台→503、1 台→自动、多于 1 台→409 附清单；
+  指定他人实例→404（不泄露存在性）。
+- **存储边界**：用户/秘钥/会话/Agent 身份/机器人 → MySQL（外键 ON DELETE CASCADE）；
+  任务队列、broker、在线状态 → 网关内存（高频运行时态，重启不影响账号体系）。
 
 ## 任务状态机
 

@@ -1,6 +1,7 @@
 # 减小 gateway 镜像的构建上下文（context 是仓库根目录）
 .git/
 .github/
+.trae/
 .workbuddy/
 
 # 发布产物与文档不需要进镜像
@@ -11,6 +12,9 @@ docs/
 # 前端依赖与构建产物：容器里会重新 npm install + build
 frontend/node_modules/
 frontend/dist/
+
+# Electron 客户端源码不参与 gateway 镜像构建，依赖/缓存/产物一律排除
+client/
 
 # 其他噪音
 **/node_modules/

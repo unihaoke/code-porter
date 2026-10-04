@@ -8,6 +8,7 @@ import (
 func newSpec() Spec {
 	return Spec{
 		AgentID:     "local-pc",
+		OwnerID:     "usr_alice",
 		Model:       "claude-code",
 		Mode:        ModePull,
 		MaxRetry:    1,
@@ -27,6 +28,11 @@ func TestNewTaskValidation(t *testing.T) {
 	if _, err := NewTask(spec); err == nil {
 		t.Fatal("expected error for empty prompt")
 	}
+	noOwner := newSpec()
+	noOwner.OwnerID = ""
+	if _, err := NewTask(noOwner); err == nil {
+		t.Fatal("expected error for empty owner")
+	}
 }
 
 func TestTaskLifecycle(t *testing.T) {
@@ -37,6 +43,9 @@ func TestTaskLifecycle(t *testing.T) {
 	}
 	if tk.Status() != StatusPending {
 		t.Fatalf("expected pending, got %s", tk.Status())
+	}
+	if tk.OwnerID() != "usr_alice" {
+		t.Fatalf("owner mismatch: %s", tk.OwnerID())
 	}
 	if err := tk.MarkRunning("lock-1", 30*time.Second, now); err != nil {
 		t.Fatalf("mark running: %v", err)

@@ -2,6 +2,9 @@
 //
 // 职责：主动出站连接网关 → 拉取/接收任务 → 本地协程池限流 → 调用本机 MCP AI 工具 → 回传结果。
 // 本机不监听任何端口，外网无法主动访问，安全性由「出站连接」保证。
+//
+// 在 Windows 上双击 codeporter-agent.exe 会弹出原生配置窗口（无需浏览器）；
+// 命令行 / 容器场景可用 -console 以无界面模式运行。
 package main
 
 import (
@@ -11,157 +14,147 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
-	agentapp "github.com/codeporter/code-porter/internal/application/agent"
-	"github.com/codeporter/code-porter/internal/application/port"
-	"github.com/codeporter/code-porter/internal/infrastructure/client"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
-	"github.com/codeporter/code-porter/internal/infrastructure/mcp"
-	"github.com/codeporter/code-porter/internal/infrastructure/system"
-	"github.com/codeporter/code-porter/pkg/pool"
 	"github.com/codeporter/code-porter/pkg/version"
 )
 
 func main() {
 	configPath := flag.String("config", "configs/agent.yaml", "agent config file path")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	console := flag.Bool("console", false, "run in headless console mode (no GUI); ignored on non-Windows")
+	testCLI := flag.Bool("test-cli", false, "test local AI CLI connectivity and exit")
+	noProbe := flag.Bool("no-probe", false, "with -test-cli: only check installation, do not issue a real call")
+	ipcMode := flag.Bool("ipc", false, "run as an IPC core driven by an Electron/GUI frontend over stdin/stdout JSON lines")
 	flag.Parse()
+
+	cfgPath := resolveConfigPath(*configPath)
 
 	if *showVersion {
 		fmt.Println("codeporter-agent " + version.String())
 		return
 	}
 
-	if err := run(*configPath); err != nil {
+	// IPC 模式：供 Electron 等前端驱动。必须在 GUI 分支之前判断。
+	if *ipcMode {
+		cfg, err := loadConfig(cfgPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+			os.Exit(1)
+		}
+		bootLog := logging.New(os.Stderr, logging.ParseLevel(cfg.Log.Level))
+		if err := newIPCServer(cfgPath, cfg, bootLog).run(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "ipc exited: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// 本地 AI 连通性自检：与 GUI 上的「测试 CLI 连接」是同一套逻辑。
+	if *testCLI {
+		os.Exit(runCLITest(cfgPath, *noProbe))
+	}
+
+	// Windows 双击默认弹出原生配置窗口；显式 -console 或非 Windows 走命令行模式。
+	if runtime.GOOS == "windows" && !*console {
+		if err := runGUI(cfgPath); err != nil {
+			fmt.Fprintf(os.Stderr, "gui error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := runHeadless(cfgPath); err != nil {
 		fmt.Fprintf(os.Stderr, "agent exited with error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(configPath string) error {
-	cfg, err := config.LoadAgent(configPath)
-	if err != nil {
-		if errors.Is(err, config.ErrNotFound) {
-			fmt.Fprintf(os.Stderr, "config %s not found, fallback to defaults\n", configPath)
-			cfg, _ = config.LoadAgent("")
-		} else {
-			return err
+// resolveConfigPath 把相对路径解析为「可执行文件所在目录」下的绝对路径，
+// 这样双击 exe 时无论系统起始目录如何都能正确找到 configs/agent.yaml。
+func resolveConfigPath(p string) string {
+	if filepath.IsAbs(p) {
+		return p
+	}
+	if _, err := os.Stat(p); err == nil {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
 		}
 	}
-
-	log := logging.New(os.Stdout, logging.ParseLevel(cfg.Log.Level))
-	agentID := config.EnsureAgentRegistry(cfg)
-
-	// --- 本地资源：MCP 适配层 + 硬上限协程池 ---
-	mcpRegistry := mcp.NewRegistry(cfg.MCP, log)
-	defer func() {
-		if err := mcpRegistry.Close(); err != nil {
-			log.Warn("close mcp registry failed", port.F("err", err.Error()))
+	if exe, err := os.Executable(); err == nil {
+		if candidate := filepath.Join(filepath.Dir(exe), p); true {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
 		}
-	}()
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
 
-	workerPool := pool.New(cfg.WorkerPool.MaxConcurrency, cfg.WorkerPool.QueueSize,
-		pool.WithPanicHandler(func(jobID string, recovered any) {
-			log.Error("worker panic recovered", port.F("task_id", jobID), port.F("panic", recovered))
-		}))
+// loadConfig 加载配置；文件不存在时回落到默认配置（GUI 将用于创建新文件）。
+func loadConfig(path string) (*config.AgentConfig, error) {
+	cfg, err := config.LoadAgent(path)
+	if err != nil {
+		if errors.Is(err, config.ErrNotFound) {
+			return config.LoadAgent("")
+		}
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// runHeadless 无界面模式：启动代理并阻塞直到收到终止信号。
+func runHeadless(configPath string) error {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	log := logging.New(os.Stdout, logging.ParseLevel(cfg.Log.Level))
+	svc := NewService(configPath, cfg, log)
+	if err := svc.Start(); err != nil {
+		return err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	workerPool.Start(ctx)
-
-	// --- 出站网关客户端 ---
-	policy := agentapp.Policy{
-		PullIntervalMin:   cfg.Pull.IntervalMin,
-		PullIntervalMax:   cfg.Pull.IntervalMax,
-		BackoffFactor:     cfg.Pull.BackoffFactor,
-		MaxConcurrency:    cfg.WorkerPool.MaxConcurrency,
-		QueueSize:         cfg.WorkerPool.QueueSize,
-		MCPTimeout:        cfg.MCP.ClaudeCode.RequestTimeout,
-		HeartbeatInterval: cfg.Health.Interval,
-		ReconnectMin:      cfg.Direct.ReconnectMin,
-		ReconnectMax:      cfg.Direct.ReconnectMax,
-	}
-
-	gwClient := client.NewGatewayClient(client.Config{
-		BaseURL:     cfg.Gateway.Addr,
-		AgentToken:  cfg.Agent.Token,
-		Timeout:     cfg.Gateway.Timeout,
-		InsecureTLS: cfg.Gateway.InsecureTLS,
-	})
-
-	httpReporter := agentapp.NewHTTPReporter(gwClient, string(agentID))
-	executor := agentapp.NewTaskExecutor(mcpRegistry, httpReporter, log, policy)
-
-	// --- Pull 队列模式消费者（默认开启）---
-	pullConsumer := agentapp.NewPullConsumer(gwClient, agentID, workerPool, executor, httpReporter,
-		port.RealClock{}, log, policy)
-	go pullConsumer.Run(ctx)
-
-	// --- SSE 直连模式消费者（可选开启）---
-	if cfg.Direct.Enabled {
-		factory := client.NewDirectSessionFactory(client.SessionConfig{
-			BaseURL:           cfg.Gateway.Addr,
-			AgentToken:        cfg.Agent.Token,
-			HeartbeatInterval: cfg.Direct.HeartbeatInterval,
-			PongTimeout:       cfg.Direct.PongTimeout,
-			InsecureTLS:       cfg.Gateway.InsecureTLS,
-		}, log)
-		directConsumer := agentapp.NewDirectConsumer(factory, agentID, workerPool, executor, log, policy)
-		go directConsumer.Run(ctx)
-	}
-
-	// --- 健康上报 ---
-	probe := system.NewProbe()
-	mcpProber := mcpProbeAdapter{registry: mcpRegistry}
-	healthReporter := agentapp.NewHealthReporter(gwClient, agentID, probe, mcpProber, workerPool, log, policy)
-	go healthReporter.Run(ctx)
-
-	hostname, osName := probe.HostInfo()
-	log.Info("codeporter agent started",
-		port.F("version", "0.2.0"),
-		port.F("agent_id", string(agentID)),
-		port.F("gateway", cfg.Gateway.Addr),
-		port.F("max_concurrency", cfg.WorkerPool.MaxConcurrency),
-		port.F("queue_size", cfg.WorkerPool.QueueSize),
-		port.F("direct_mode", cfg.Direct.Enabled),
-		port.F("host", hostname),
-		port.F("os", osName))
-
 	<-ctx.Done()
-	log.Info("shutting down, waiting for in-flight tasks")
-
-	// 优雅退出：等待在途任务结束，最多等待 MCP 超时时长。
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		workerPool.Stop()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-shutdownCtx.Done():
-		log.Warn("shutdown timeout, some tasks may be interrupted")
-	}
-
-	log.Info("codeporter agent stopped")
+	log.Info("shutting down")
+	svc.Stop()
 	return nil
 }
 
-// mcpProbeAdapter 把 MCP 注册表适配为健康探测端口。
-type mcpProbeAdapter struct {
-	registry *mcp.Registry
-}
-
-// Health 返回全部适配器可用性。
-func (a mcpProbeAdapter) Health(ctx context.Context) []agentapp.ModelHealth {
-	items := a.registry.HealthCheckAll(ctx)
-	out := make([]agentapp.ModelHealth, 0, len(items))
-	for _, it := range items {
-		out = append(out, agentapp.ModelHealth{Model: it.Model, Available: it.Available, Detail: it.Detail})
+// runCLITest 执行本地 AI 连通性自检并打印报告，返回进程退出码。
+func runCLITest(configPath string, skipProbe bool) int {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "加载配置失败: %v\n", err)
+		return 1
 	}
-	return out
+	log := logging.New(os.Stdout, logging.ParseLevel(cfg.Log.Level))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	results := TestCLIConnections(ctx, cfg, log, CLIConnTestOptions{
+		SkipProbe: skipProbe,
+		Timeout:   90 * time.Second,
+	})
+	fmt.Print(FormatCLIConnReport(results))
+
+	ok, missing, warned, failed := summarizeCLIConn(results)
+	fmt.Printf("\n汇总: 可用 %d · 未安装 %d · 需处理 %d · 失败 %d\n", ok, missing, warned, failed)
+	if warned > 0 {
+		fmt.Println("提示: 「额度/配额不足」说明调用链已通、认证已通过，只是账号额度用尽 —— 无需配置 API 密钥。")
+	}
+	if ok == 0 && (missing > 0 || failed > 0) {
+		return 1
+	}
+	return 0
 }

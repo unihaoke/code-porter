@@ -9,6 +9,7 @@ import (
 
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/task"
+	"github.com/codeporter/code-porter/internal/domain/user"
 )
 
 // TaskRepository 任务仓储的内存实现。
@@ -69,6 +70,24 @@ func (r *TaskRepository) FindByStatus(_ context.Context, statuses ...task.Status
 	filter := toStatusSet(statuses)
 	out := make([]*task.Task, 0)
 	for _, t := range r.m {
+		if !matchStatus(t.Status(), filter) {
+			continue
+		}
+		out = append(out, t.Clone())
+	}
+	return out, nil
+}
+
+// FindByOwner 查询某用户名下的任务。
+func (r *TaskRepository) FindByOwner(_ context.Context, ownerID user.ID, statuses ...task.Status) ([]*task.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	filter := toStatusSet(statuses)
+	out := make([]*task.Task, 0)
+	for _, t := range r.m {
+		if t.OwnerID() != ownerID {
+			continue
+		}
 		if !matchStatus(t.Status(), filter) {
 			continue
 		}

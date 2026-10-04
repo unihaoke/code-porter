@@ -3,8 +3,20 @@
 /dist/
 backend/bin/
 backend/web/
+backend/*.exe
 frontend/dist/
 frontend/node_modules/
+
+# Electron 客户端（client/）依赖、缓存与打包产物
+client/node_modules/
+client/.npm-cache/
+client/_logs/
+client/dist/
+client/dist-main/
+client/release/
+client/*.png
+
+# Windows 资源编译器输出（按需保留源码旁的 .syso；不忽略已跟踪文件）
 
 # 本地数据与敏感配置
 data/
@@ -26,3 +38,7 @@ Thumbs.db
 .smoke/
 .verify/
 tmp/
+
+# 第三方工具私有目录
+.workbuddy/
+.trae/

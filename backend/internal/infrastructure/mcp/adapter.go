@@ -18,24 +18,29 @@ import (
 type AdapterConfig struct {
 	// Enabled 是否启用该适配器。
 	Enabled bool `yaml:"enabled"`
-	// Command 本地 MCP Server 启动命令（如 trae / claude / npx）。
+	// Mode 调用方式：mcp（默认，走 MCP stdio 协议）或 cli（直接命令行调用）。
+	// CLI 模式不要求工具开启 MCP Server，只要有可执行 CLI 且已登录即可。
+	Mode InvokeMode `yaml:"mode,omitempty"`
+	// Command 本地 MCP Server 启动命令（如 trae / claude / npx），或 CLI 可执行名。
 	Command string `yaml:"command"`
 	// Args 命令参数。
 	Args []string `yaml:"args"`
 	// Env 附加环境变量。
-	Env map[string]string `yaml:"env"`
+	Env map[string]string `yaml:"env,omitempty"`
 	// WorkDir 工作目录。
 	WorkDir string `yaml:"work_dir"`
-	// ToolName 指定调用的工具名；为空时自动从 tools/list 中挑选。
+	// ToolName 指定调用的工具名；为空时自动从 tools/list 中挑选（仅 MCP 模式）。
 	ToolName string `yaml:"tool_name"`
-	// PromptArgument 工具入参中承载提示词的字段名。
+	// PromptArgument 工具入参中承载提示词的字段名（仅 MCP 模式）。
 	PromptArgument string `yaml:"prompt_argument"`
-	// ExtraArguments 附加到工具入参的固定字段。
+	// ExtraArguments 附加到工具入参的固定字段（仅 MCP 模式）。
 	ExtraArguments map[string]any `yaml:"extra_arguments"`
 	// RequestTimeout 单次调用超时。
 	RequestTimeout time.Duration `yaml:"request_timeout"`
-	// StartupTimeout 子进程启动与握手超时。
+	// StartupTimeout 子进程启动与握手超时（仅 MCP 模式）。
 	StartupTimeout time.Duration `yaml:"startup_timeout"`
+	// CLI 直接命令行调用方式的配置（Mode=cli 时生效）。
+	CLI CLIConfig `yaml:"cli,omitempty"`
 }
 
 func (c AdapterConfig) withDefaults() AdapterConfig {

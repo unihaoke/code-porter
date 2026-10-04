@@ -4,8 +4,10 @@
 package agent
 
 import (
+	"strings"
 	"time"
 
+	"github.com/codeporter/code-porter/internal/domain/user"
 	"github.com/codeporter/code-porter/pkg/apperr"
 	"github.com/codeporter/code-porter/pkg/id"
 )
@@ -37,15 +39,19 @@ func (s Status) String() string { return string(s) }
 // ErrAgentNotFound Agent 不存在。
 var ErrAgentNotFound = apperr.New(apperr.CodeNotFound, "agent not found")
 
-// ErrTokenMismatch Agent Token 校验失败。
-var ErrTokenMismatch = apperr.New(apperr.CodeUnauthorized, "agent token mismatch")
+// ErrOwnerRequired Agent 必须归属某个用户。
+var ErrOwnerRequired = apperr.New(apperr.CodeInvalidParam, "agent owner is required")
 
-// Spec 创建 Agent 的输入。
+// ErrOwnerMismatch 实例归属与凭据属主不一致（实例 ID 碰撞或盗用）。
+var ErrOwnerMismatch = apperr.New(apperr.CodeForbidden, "agent instance belongs to another user")
+
+// Spec 注册 Agent 实例的输入。
 type Spec struct {
-	ID    ID
-	Name  string
-	Token string
-	Now   time.Time
+	ID ID
+	// OwnerID 归属用户（秘钥属主）。
+	OwnerID user.ID
+	Name    string
+	Now     time.Time
 	// HeartbeatTimeout 心跳超时时长，超过则判定离线。
 	HeartbeatTimeout time.Duration
 }
@@ -53,8 +59,8 @@ type Spec struct {
 // Agent 本地代理聚合根。
 type Agent struct {
 	id               ID
+	ownerID          user.ID
 	name             string
-	token            string
 	status           Status
 	registeredAt     time.Time
 	lastHeartbeatAt  time.Time
@@ -66,17 +72,17 @@ type Agent struct {
 	maxConcurrency int
 }
 
-// NewAgent 创建 Agent，初始状态为 offline。
-func NewAgent(spec Spec) (*Agent, error) {
+// Register 创建 Agent 实例（首次自注册），初始状态为 offline。
+func Register(spec Spec) (*Agent, error) {
 	now := spec.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
 	if spec.ID == "" {
-		return nil, apperr.Wrap(apperr.CodeInvalidParam, "agent id is required", nil)
+		return nil, apperr.Wrap(apperr.CodeInvalidParam, "agent instance id is required", nil)
 	}
-	if spec.Token == "" {
-		return nil, apperr.Wrap(apperr.CodeInvalidParam, "agent token is required", nil)
+	if spec.OwnerID == "" {
+		return nil, ErrOwnerRequired
 	}
 	hb := spec.HeartbeatTimeout
 	if hb <= 0 {
@@ -84,8 +90,8 @@ func NewAgent(spec Spec) (*Agent, error) {
 	}
 	return &Agent{
 		id:               spec.ID,
+		ownerID:          spec.OwnerID,
 		name:             spec.Name,
-		token:            spec.Token,
 		status:           StatusOffline,
 		registeredAt:     now,
 		lastHeartbeatAt:  now,
@@ -105,11 +111,11 @@ func (a *Agent) Clone() *Agent {
 // ID 标识。
 func (a *Agent) ID() ID { return a.id }
 
+// OwnerID 归属用户 ID（租户隔离依据）。
+func (a *Agent) OwnerID() user.ID { return a.ownerID }
+
 // Name 名称。
 func (a *Agent) Name() string { return a.name }
-
-// Token 鉴权令牌（仅网关侧校验使用）。
-func (a *Agent) Token() string { return a.token }
 
 // Status 在线状态。
 func (a *Agent) Status() Status { return a.status }
@@ -129,12 +135,32 @@ func (a *Agent) QueueMaxLen() int { return a.queueMaxLen }
 // MaxConcurrency 本地协程池上限。
 func (a *Agent) MaxConcurrency() int { return a.maxConcurrency }
 
-// VerifyToken 校验 Agent Token。
-func (a *Agent) VerifyToken(token string) error {
-	if token == "" || a.token != token {
-		return ErrTokenMismatch
+// VerifyOwner 校验实例归属；归属不一致返回 ErrOwnerMismatch。
+func (a *Agent) VerifyOwner(ownerID user.ID) error {
+	if ownerID == "" || a.ownerID != ownerID {
+		return ErrOwnerMismatch
 	}
 	return nil
+}
+
+// UpdateName 更新机器名（Agent 重连时上报最新主机名/备注名）。
+func (a *Agent) UpdateName(name string) {
+	if name = strings.TrimSpace(name); name != "" {
+		a.name = name
+	}
+}
+
+// RewriteIdentity 仓储反序列化回填持久身份，仅供仓储使用。
+//
+// 在线状态/健康快照/队列容量是易失运行时态，不从持久化层恢复：
+// 重连后由心跳与健康上报重建，因此重建实例初始为 offline。
+func (a *Agent) RewriteIdentity(id ID, ownerID user.ID, name string, createdAt, lastSeenAt time.Time) {
+	a.id = id
+	a.ownerID = ownerID
+	a.name = name
+	a.registeredAt = createdAt
+	a.lastHeartbeatAt = lastSeenAt
+	a.status = StatusOffline
 }
 
 // MarkOnline 标记在线并刷新心跳。

@@ -32,7 +32,7 @@ function time(ts: number): string {
 async function load() {
   loading.value = true
   try {
-    const res = await api.tasks(limit.value)
+    const res = await api.tasks(`limit=${limit.value}`)
     tasks.value = res.tasks ?? []
     error.value = ''
   } catch (e) {
