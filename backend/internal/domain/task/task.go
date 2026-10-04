@@ -44,7 +44,7 @@ var ErrBadLockToken = apperr.New(apperr.CodeConflict, "invalid task lock token")
 
 // Spec 创建任务所需的全部输入。
 type Spec struct {
-	AgentID agent.ID
+	AgentID     agent.ID
 	// OwnerID 归属用户（租户隔离依据，必须与目标 Agent 的属主一致）。
 	OwnerID     user.ID
 	Model       model.Model

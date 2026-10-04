@@ -14,6 +14,13 @@ export interface DisplayLog extends LogEntry {
   id: number
 }
 
+/** 一条界面提示（toast）。 */
+export interface Toast {
+  id: number
+  text: string
+  kind: 'info' | 'error'
+}
+
 declare global {
   interface Window {
     codeporter: import('@shared/types').CodeporterApi
@@ -35,11 +42,27 @@ const state = reactive({
   testing: false,
   testResult: null as CliTestResult | null,
   busy: false,
-  ready: false
+  ready: false,
+  toasts: [] as Toast[]
 })
 
 let logSeq = 0
+let toastSeq = 0
 const MAX_LOGS = 3000
+
+/** 弹一条界面提示。错误类停留更久；同屏最多保留 3 条，避免刷屏。 */
+function toast(text: string, kind: Toast['kind'] = 'info'): void {
+  const id = ++toastSeq
+  state.toasts.push({ id, text, kind })
+  if (state.toasts.length > 3) state.toasts.splice(0, state.toasts.length - 3)
+  window.setTimeout(() => dismissToast(id), kind === 'error' ? 8000 : 3000)
+}
+
+/** 关闭一条提示（也供点击 toast 时手动关闭）。 */
+function dismissToast(id: number): void {
+  const i = state.toasts.findIndex((t) => t.id === id)
+  if (i >= 0) state.toasts.splice(i, 1)
+}
 
 /** 追加一条日志并滚动到底部。 */
 function pushLog(level: LogEntry['level'], time: string, msg: string): void {
@@ -75,6 +98,17 @@ function handleEvent(name: string, data: unknown): void {
       state.ready = true
       break
     }
+    case 'core-error': {
+      // 核心二进制损坏 / 被杀软拦截等致命错误：必须浮到界面上，不能只沉在日志里。
+      const msg = (data as { msg?: string } | null)?.msg ?? '本地核心发生错误'
+      toast(msg, 'error')
+      break
+    }
+    case 'core-exit': {
+      const p = data as { msg?: string } | null
+      toast(p?.msg ?? '本地核心进程已退出，请重启客户端', 'error')
+      break
+    }
     default:
       break
   }
@@ -97,6 +131,9 @@ async function init(): Promise<void> {
       } catch {
         /* 继续重试 */
       }
+    }
+    if (!state.config) {
+      toast('无法连接本地核心进程，操作暂不可用；请重启客户端或查看运行日志', 'error')
     }
   }
   await refreshHealth()
@@ -153,48 +190,72 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-/** 保存当前配置。 */
-async function saveConfig(): Promise<boolean> {
-  if (!state.config) return false
+/**
+ * 保存当前配置。
+ * @returns 成功返回 null；失败返回后台给出的错误信息（供界面弹提示）。
+ */
+async function saveConfig(): Promise<string | null> {
+  if (!state.config) return '配置尚未加载完成'
   state.busy = true
   try {
     // 必须传纯数据：state.config 是 reactive 代理，直接传会
     // "An object could not be cloned"。
     await api.saveConfig(toPlain(state.config))
     pushLog('info', now(), '配置已保存')
-    return true
+    toast('配置已保存')
+    return null
   } catch (err) {
-    pushLog('error', now(), `保存失败：${(err as Error).message}`)
-    return false
+    const msg = errMessage(err)
+    pushLog('error', now(), `保存失败：${msg}`)
+    toast(`保存失败：${msg}`, 'error')
+    return msg
   } finally {
     state.busy = false
   }
 }
 
-/** 启动代理。 */
-async function startAgent(): Promise<void> {
+/**
+ * 启动代理。
+ * @returns 成功返回 null；失败返回后台给出的错误信息（如秘钥未配置、旧 token 等）。
+ */
+async function startAgent(): Promise<string | null> {
   state.busy = true
   try {
     state.status = await api.start()
     pushLog('info', now(), '代理已启动')
+    toast('代理已启动')
+    return null
   } catch (err) {
-    pushLog('error', now(), `启动失败：${(err as Error).message}`)
+    const msg = errMessage(err)
+    pushLog('error', now(), `启动失败：${msg}`)
+    toast(`启动失败：${msg}`, 'error')
+    return msg
   } finally {
     state.busy = false
   }
 }
 
-/** 停止代理。 */
-async function stopAgent(): Promise<void> {
+/** 停止代理。成功返回 null，失败返回错误信息。 */
+async function stopAgent(): Promise<string | null> {
   state.busy = true
   try {
     state.status = await api.stop()
     pushLog('info', now(), '代理已停止')
+    toast('代理已停止')
+    return null
   } catch (err) {
-    pushLog('error', now(), `停止失败：${(err as Error).message}`)
+    const msg = errMessage(err)
+    pushLog('error', now(), `停止失败：${msg}`)
+    toast(`停止失败：${msg}`, 'error')
+    return msg
   } finally {
     state.busy = false
   }
+}
+
+/** 统一的错误取信：Electron IPC reject 出来的是 Error 实例。 */
+function errMessage(err: unknown): string {
+  return err instanceof Error && err.message ? err.message : String(err)
 }
 
 /** 测试本地 AI 连通性。 */
@@ -226,6 +287,19 @@ async function testCli(skipProbe = false): Promise<CliTestResult | null> {
   }
 }
 
+/** 在系统文件管理器中打开配置文件所在目录。 */
+async function openConfigDir(): Promise<void> {
+  const cfgPath = state.status?.config_path
+  if (!cfgPath) {
+    toast('尚未拿到配置文件路径，请稍候再试', 'error')
+    return
+  }
+  // 去掉最后一段文件名；路径里没有分隔符时 replace 不匹配，原样返回。
+  const dir = cfgPath.replace(/[\\/][^\\/]*$/, '')
+  const errMsg = await api.openPath(dir)
+  if (errMsg) toast(`打开目录失败：${errMsg}`, 'error')
+}
+
 /** 打开目录选择对话框并写回配置。 */
 async function pickWorkDir(): Promise<void> {
   if (!state.config) return
@@ -243,11 +317,14 @@ export function useStore() {
   return {
     state,
     init,
+    toast,
+    dismissToast,
     saveConfig,
     startAgent,
     stopAgent,
     testCli,
     pickWorkDir,
+    openConfigDir,
     refreshHealth
   }
 }

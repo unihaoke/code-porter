@@ -95,9 +95,9 @@ func (h *ChatCompletionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	agentID := headerIgnoreCase(r, AgentHeader)
 
 	cmd := gateway.SubmitTaskCommand{
-		OwnerID:     owner.ID(),
-		APIKeyID:    keyID,
-		AgentID:     agentIDOf(agentID),
+		OwnerID:   owner.ID(),
+		APIKeyID:  keyID,
+		AgentID:   agentIDOf(agentID),
 		Model:       m,
 		Messages:    toDomainMessages(req.Messages),
 		Operation:   operation,

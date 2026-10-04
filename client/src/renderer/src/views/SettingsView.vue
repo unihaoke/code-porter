@@ -6,9 +6,11 @@ import type { ToolConfig } from '@shared/types'
 
 const emit = defineEmits<{ notify: [string, boolean?] }>()
 
-const { state, saveConfig, pickWorkDir, testCli } = useStore()
+const { state, saveConfig, pickWorkDir, testCli, openConfigDir } = useStore()
 
 const cfg = computed(() => state.config)
+/** 配置文件的绝对路径（Go 核心在 status 事件里回报）。 */
+const configPath = computed(() => state.status?.config_path ?? '')
 const logLevels = ['debug', 'info', 'warn', 'error']
 
 /** 可配置的工具清单。放在脚本里而非模板内联对象——v-for 遍历对象时
@@ -21,8 +23,8 @@ const TOOLS = [
 ] as const
 
 async function onSave(): Promise<void> {
-  if (await saveConfig()) emit('notify', '配置已保存')
-  else emit('notify', '保存失败，详见运行日志', true)
+  // 成功/失败的提示（含后台原始错误信息）由 store 统一弹 toast，这里不再重复弹。
+  await saveConfig()
 }
 
 async function onTestNoProbe(): Promise<void> {
@@ -43,9 +45,16 @@ function toggleTool(key: string): void {
 </script>
 
 <template>
-  <div v-if="cfg" class="page-head">
+  <div v-if="cfg" class="page-head page-head--col">
     <h1>配置</h1>
-    <p>修改后点「保存配置」写入 <code>configs/agent.yaml</code>；已在运行的任务需重启代理才生效。</p>
+    <p>
+      修改后点「保存配置」写入下面的配置文件；已在运行的任务需重启代理才生效。
+    </p>
+    <div v-if="configPath" class="cfg-path">
+      <span class="cfg-path__label">配置文件：</span>
+      <code class="cfg-path__value" :title="configPath">{{ configPath }}</code>
+      <button class="btn btn--sm" @click="openConfigDir">打开所在文件夹</button>
+    </div>
   </div>
   <div v-else class="empty">正在加载配置…</div>
 
@@ -186,3 +195,34 @@ function toggleTool(key: string): void {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 配置页头部改为纵向排列，好放下完整配置路径行。 */
+.page-head--col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cfg-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.cfg-path__label {
+  color: var(--c-text-3);
+  flex: 0 0 auto;
+}
+
+.cfg-path__value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-text-2);
+}
+</style>

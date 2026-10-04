@@ -380,22 +380,33 @@ func defaultAgentConfig() *AgentConfig {
 // EnsureAgentIdentity 校验连接秘钥、自动生成实例 ID/机器名并写回配置文件。
 //
 // 返回实例 ID。约定：
-//   - agent.key 缺失或仍使用旧 token 字段 → 明确报错（旧 token 不再被接受）；
+//   - agent.key 缺失 → 明确报错；若同时残留旧 token 字段 / AGENT_TOKEN 环境变量，
+//     报错中给出从旧版迁移的指引（旧 token 早已不参与鉴权）；
+//   - agent.key 已配置 → 即使文件里残留旧 agent.token 也不再阻断启动：
+//     该字段视为惰性垃圾，本次写回时自动清除，避免「已换秘钥却永远启动失败」；
 //   - agent.id 留空 → 生成 agt_<16hex>（crypto/rand），与该机器配置 1:1 绑定并写回；
 //   - agent.name 留空 → 取主机名并写回。
 func EnsureAgentIdentity(cfg *AgentConfig, configPath string) (string, error) {
-	// 旧版 AGENT_TOKEN（OS env 或 .env 文件）一律拒绝并给出迁移指引。
-	if v := loadDotEnv(configPath).lookup("AGENT_TOKEN"); v != "" {
-		return "", errors.New("检测到旧环境变量 AGENT_TOKEN：已废弃，请改用控制台生成的秘钥并设置 AGENT_KEY")
-	}
-	if strings.TrimSpace(cfg.Agent.DeprecatedToken) != "" {
-		return "", errors.New("检测到旧配置 agent.token：已废弃，请改用在控制台「秘钥」页生成的秘钥填入 agent.key（环境变量 AGENT_KEY）")
-	}
+	changed := false
+
 	if strings.TrimSpace(cfg.Agent.Key) == "" {
+		if strings.TrimSpace(cfg.Agent.DeprecatedToken) != "" {
+			return "", errors.New("检测到旧配置 agent.token：已废弃，请改用在控制台「秘钥」页生成的秘钥填入 agent.key（环境变量 AGENT_KEY）")
+		}
+		// 旧版 AGENT_TOKEN（OS env 或 .env 文件）在没有新秘钥时同样拒绝并给出迁移指引。
+		if v := loadDotEnv(configPath).lookup("AGENT_TOKEN"); v != "" {
+			return "", errors.New("检测到旧环境变量 AGENT_TOKEN：已废弃，请改用控制台生成的秘钥并设置 AGENT_KEY")
+		}
 		return "", fmt.Errorf("%w：请在控制台「秘钥」页创建含 agent 权限的秘钥，填入配置 agent.key 或环境变量 AGENT_KEY", ErrAgentKeyMissing)
 	}
 
-	changed := false
+	// 已有新秘钥：旧 token 字段绝不参与鉴权，这里清掉并随本次写回落盘，
+	// 让「生成秘钥 → 粘贴保存 → 启动」一次成功，不再被历史垃圾字段卡住。
+	if strings.TrimSpace(cfg.Agent.DeprecatedToken) != "" {
+		cfg.Agent.DeprecatedToken = ""
+		changed = true
+	}
+
 	if cfg.Agent.ID == "" {
 		id, err := newInstanceID()
 		if err != nil {

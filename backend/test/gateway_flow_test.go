@@ -81,10 +81,10 @@ func TestTenantIsolationFlow(t *testing.T) {
 
 	// B 还没有任何实例 → 503。
 	_, err := b.submit.Execute(ctx, gatewayapp.SubmitTaskCommand{
-		OwnerID:  ownerB,
-		Model:    model.ClaudeCode,
+		OwnerID: ownerB,
+		Model:   model.ClaudeCode,
 		Messages: []task.Message{{Role: "user", Content: "hi"}},
-		Mode:     task.ModePull,
+		Mode:    task.ModePull,
 	})
 	if apperr.CodeOf(err) != apperr.CodeUnavailable {
 		t.Fatalf("owner B no agents -> unavailable, got %v", err)
@@ -96,21 +96,21 @@ func TestTenantIsolationFlow(t *testing.T) {
 	}
 	// B 指定 A 的实例（种子 admin 的 local-pc）→ 404。
 	_, err = b.submit.Execute(ctx, gatewayapp.SubmitTaskCommand{
-		OwnerID:  ownerB,
-		AgentID:  "local-pc",
-		Model:    model.ClaudeCode,
+		OwnerID: ownerB,
+		AgentID: "local-pc",
+		Model:   model.ClaudeCode,
 		Messages: []task.Message{{Role: "user", Content: "hi"}},
-		Mode:     task.ModePull,
+		Mode:    task.ModePull,
 	})
 	if apperr.CodeOf(err) != apperr.CodeNotFound {
 		t.Fatalf("cross-tenant explicit -> not_found, got %v", err)
 	}
 	// B 不指定实例（仅 1 台）→ 自动路由到自己的实例并入队。
 	res, err := b.submit.Execute(ctx, gatewayapp.SubmitTaskCommand{
-		OwnerID:  ownerB,
-		Model:    model.ClaudeCode,
+		OwnerID: ownerB,
+		Model:   model.ClaudeCode,
 		Messages: []task.Message{{Role: "user", Content: "hi"}},
-		Mode:     task.ModePull,
+		Mode:    task.ModePull,
 	})
 	if err != nil {
 		t.Fatalf("owner B auto-route: %v", err)

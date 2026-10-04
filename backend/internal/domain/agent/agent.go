@@ -47,11 +47,11 @@ var ErrOwnerMismatch = apperr.New(apperr.CodeForbidden, "agent instance belongs 
 
 // Spec 注册 Agent 实例的输入。
 type Spec struct {
-	ID ID
+	ID    ID
 	// OwnerID 归属用户（秘钥属主）。
 	OwnerID user.ID
-	Name    string
-	Now     time.Time
+	Name  string
+	Now   time.Time
 	// HeartbeatTimeout 心跳超时时长，超过则判定离线。
 	HeartbeatTimeout time.Duration
 }

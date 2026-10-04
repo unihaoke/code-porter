@@ -31,33 +31,54 @@ function resolveConfigPath(): string {
     if (fs.existsSync(tpl)) {
       fs.copyFileSync(tpl, userCfg)
     } else {
+      // 模板缺失时的兜底内容：必须与 backend/configs/agent.yaml 保持同一代格式。
+      // 绝不能再写旧版 agent.token——多租户版本只认控制台生成的 agent.key，
+      // 历史上这里写过 token 占位值，导致用户粘贴新秘钥后仍被旧字段卡住启动。
       fs.writeFileSync(
         userCfg,
         [
+          '# CodePorter LocalAgent 配置（首次运行自动生成）',
+          '# 连接秘钥在网关控制台「秘钥」页创建（勾选 agent 权限）后粘贴到 agent.key',
           'agent:',
-          '    id: local-pc',
-          '    token: change-me-agent-token',
+          '  id: ""',
+          '  name: ""',
+          '  key: ""',
           'gateway:',
-          '    addr: http://127.0.0.1:9022',
-          '    timeout: 30s',
-          '    insecure_tls: false',
+          '  addr: "http://127.0.0.1:9022"',
+          '  timeout: 30s',
+          '  insecure_tls: false',
+          'pull:',
+          '  interval_min: 500ms',
+          '  interval_max: 3s',
+          '  backoff_factor: 1.6',
           'worker_pool:',
-          '    max_concurrency: 2',
-          '    queue_size: 4',
+          '  max_concurrency: 2',
+          '  queue_size: 4',
+          'direct:',
+          '  enabled: true',
+          '  heartbeat_interval: 20s',
+          '  pong_timeout: 60s',
+          '  reconnect_min: 1s',
+          '  reconnect_max: 30s',
+          'health:',
+          '  interval: 15s',
           'mcp:',
-          '    work_dir: ""',
-          '    claude_code:',
-          '        enabled: true',
-          '        mode: cli',
-          '        command: claude',
-          '        args: []',
-          '        work_dir: ""',
-          '        request_timeout: 5m0s',
-          'secrets:',
-          '    anthropic_api_key: ""',
-          '    openai_api_key: ""',
+          '  work_dir: ""',
+          '  trae:',
+          '    enabled: true',
+          '    command: "trae-mcp"',
+          '  claude_code:',
+          '    enabled: true',
+          '    command: "claude"',
+          '  codebuddy:',
+          '    enabled: true',
+          '    command: "codebuddy-mcp"',
+          '  codex:',
+          '    enabled: false',
+          '    command: "codex"',
+          'secrets: {}',
           'log:',
-          '    level: info',
+          '  level: info',
           ''
         ].join('\n'),
         'utf8'
@@ -161,6 +182,12 @@ function registerIpc(): void {
   ipcMain.handle('shell:openExternal', (_e, url: string) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
   })
+  // 打开本地目录（如配置文件所在文件夹）。openPath 失败时返回错误信息字符串，
+  // 成功返回空串——交回渲染层用于提示。
+  ipcMain.handle('shell:openPath', (_e, target: string) => {
+    if (typeof target !== 'string' || !target) return '路径为空'
+    return shell.openPath(target)
+  })
   ipcMain.handle('app:quit', () => {
     core?.dispose()
     app.quit()
@@ -212,18 +239,23 @@ function bridgeCoreEvents(): void {
     })
   })
   core.on('core-error', (err: Error) => {
+    const msg = `核心进程错误：${err.message}`
     sendToRenderer('core:event', 'log', {
       level: 'error',
       time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-      msg: `核心进程错误：${err.message}`
+      msg
     })
+    // 额外发一条结构化事件，让界面能直接弹提示，而不只是沉到日志里。
+    sendToRenderer('core:event', 'core-error', { msg })
   })
   core.on('core-exit', (code: number | null) => {
+    const msg = `核心进程已退出（code=${code}），启动/检测等操作将不可用，请重启客户端`
     sendToRenderer('core:event', 'log', {
       level: 'warn',
       time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-      msg: `核心进程已退出（code=${code}）`
+      msg
     })
+    sendToRenderer('core:event', 'core-exit', { code, msg })
   })
 }
 

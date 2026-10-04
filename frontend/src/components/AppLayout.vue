@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/account'
@@ -24,11 +24,46 @@ const navs = computed(() => {
 const current = computed(() => route.path)
 
 async function logout() {
+  menuOpen.value = false
   await auth.logout()
   router.push({ name: 'login' })
 }
 
-// 修改密码弹窗
+// ---------- 账号下拉菜单（参考 GitHub / GitLab 等常见后台的账号区交互） ----------
+const menuOpen = ref(false)
+const menuRef = ref<HTMLElement | null>(null)
+
+const username = computed(() => auth.user?.username ?? '未登录')
+const roleLabel = computed(() => (auth.isAdmin ? '管理员' : '普通用户'))
+/** 头像首字母（用户名可能是邮箱，取 @ 前的首字符）。 */
+const avatarText = computed(() => {
+  const name = auth.user?.username?.trim()
+  if (!name) return '?'
+  return name.replace(/^@/, '').charAt(0).toUpperCase()
+})
+
+function toggleMenu(): void {
+  menuOpen.value = !menuOpen.value
+}
+
+function onDocClick(e: MouseEvent): void {
+  if (menuOpen.value && menuRef.value && !menuRef.value.contains(e.target as Node)) {
+    menuOpen.value = false
+  }
+}
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') menuOpen.value = false
+}
+
+document.addEventListener('mousedown', onDocClick)
+document.addEventListener('keydown', onKeydown)
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocClick)
+  document.removeEventListener('keydown', onKeydown)
+})
+
+// ---------- 修改密码弹窗 ----------
 const showPwd = ref(false)
 const oldPwd = ref('')
 const newPwd = ref('')
@@ -37,6 +72,7 @@ const pwdError = ref('')
 const savingPwd = ref(false)
 
 function openPwd() {
+  menuOpen.value = false
   oldPwd.value = ''
   newPwd.value = ''
   pwdMsg.value = ''
@@ -87,14 +123,57 @@ async function submitPwd() {
         </RouterLink>
       </nav>
       <div class="side-foot">
-        <div class="user-box">
-          <div class="user-name">{{ auth.user?.username ?? '未登录' }}</div>
-          <div class="user-role" :class="{ admin: auth.isAdmin }">
-            {{ auth.isAdmin ? '管理员' : '普通用户' }}
+        <div ref="menuRef" class="user-menu">
+          <button
+            class="user-chip"
+            :class="{ 'user-chip--open': menuOpen }"
+            type="button"
+            :aria-expanded="menuOpen"
+            aria-haspopup="menu"
+            @click="toggleMenu"
+          >
+            <span class="avatar">{{ avatarText }}</span>
+            <span class="user-meta">
+              <span class="user-name" :title="username">{{ username }}</span>
+              <span class="user-role-tag" :class="{ admin: auth.isAdmin }">{{ roleLabel }}</span>
+            </span>
+            <svg class="chev" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+              <path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <div v-if="menuOpen" class="dropdown" role="menu">
+            <div class="dropdown__head">
+              <div class="dropdown__name" :title="username">{{ username }}</div>
+              <div class="dropdown__role">
+                <span class="dot" :class="auth.isAdmin ? 'dot--admin' : 'dot--member'" />
+                {{ roleLabel }}
+              </div>
+            </div>
+            <div class="dropdown__sep" />
+            <button class="dropdown__item" type="button" role="menuitem" @click="openPwd">
+              <svg class="dropdown__icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                <g fill="none" stroke="currentColor" stroke-width="1.4"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="6" cy="6" r="3" />
+                  <path d="M8.2 8.2 13 13M11 10.5l1.2-1.2M9 12.5l1.2-1.2" />
+                </g>
+              </svg>
+              修改密码
+            </button>
+            <button class="dropdown__item dropdown__item--danger" type="button" role="menuitem" @click="logout">
+              <svg class="dropdown__icon" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+                <g fill="none" stroke="currentColor" stroke-width="1.4"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M6 2.5H4a1.5 1.5 0 0 0-1.5 1.5v8A1.5 1.5 0 0 0 4 13.5h2" />
+                  <path d="M8.5 5 11.5 8l-3 3M11.5 8H5.5" />
+                </g>
+              </svg>
+              退出登录
+            </button>
           </div>
         </div>
-        <button class="btn btn--ghost" style="width: 100%" @click="openPwd">修改密码</button>
-        <button class="btn" style="width: 100%; margin-top: 6px" @click="logout">退出登录</button>
       </div>
     </aside>
 
@@ -200,26 +279,182 @@ nav {
   padding-top: 14px;
 }
 
-.user-box {
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  border-radius: 8px;
-  background: #f7f8fa;
+/* ---------- 账号区：chip + 下拉菜单 ---------- */
+.user-menu {
+  position: relative;
+}
+
+.user-chip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.user-chip:hover {
+  background: #f4f6f9;
+}
+
+.user-chip--open,
+.user-chip--open:hover {
+  background: #f4f6f9;
+  border-color: var(--border);
+}
+
+.avatar {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--brand);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.user-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .user-name {
   font-size: 13px;
   font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.user-role {
+.user-role-tag {
   font-size: 11px;
   color: var(--muted);
-  margin-top: 2px;
+  line-height: 1.4;
 }
 
-.user-role.admin {
+.user-role-tag.admin {
   color: var(--brand);
+}
+
+.chev {
+  flex: 0 0 auto;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+
+.user-chip--open .chev {
+  transform: rotate(180deg);
+}
+
+.dropdown {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
+  padding: 6px;
+  z-index: 40;
+  animation: menu-in 0.14s ease-out;
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dropdown__head {
+  padding: 8px 10px 7px;
+  min-width: 0;
+}
+
+.dropdown__name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dropdown__role {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.dropdown__role .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot--admin {
+  background: var(--brand);
+}
+
+.dot--member {
+  background: #9aa4b2;
+}
+
+.dropdown__sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 2px 6px;
+}
+
+.dropdown__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.dropdown__item:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.dropdown__item--danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.dropdown__icon {
+  flex: 0 0 auto;
+  opacity: 0.75;
 }
 
 .modal-mask {

@@ -12,12 +12,12 @@ const dummyHash64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 
 func baseSpec(now time.Time) Spec {
 	return Spec{
-		UserID:  user.ID("usr_alice"),
-		Name:    "my laptop",
-		Scopes:  AllScopes,
-		KeyHash: dummyHash64,
-		Prefix:  "cp_abcd1234",
-		Now:     now,
+		UserID:   user.ID("usr_alice"),
+		Name:     "my laptop",
+		Scopes:   AllScopes,
+		KeyHash:  dummyHash64,
+		Prefix:   "cp_abcd1234",
+		Now:      now,
 	}
 }
 

@@ -30,7 +30,7 @@ var ErrOwnerRequired = apperr.New(apperr.CodeInvalidParam, "bot owner is require
 type Spec struct {
 	// OwnerID 归属用户（租户）。
 	OwnerID user.ID
-	Name    string
+	Name string
 	// Channel IM 渠道。
 	Channel Channel
 	// Model 该机器人默认使用的本地 AI 工具，为空时取全局默认。

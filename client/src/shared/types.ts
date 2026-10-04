@@ -17,7 +17,14 @@ export type IpcAction =
   | 'app.quit'
 
 /** Go 核心推送的事件。 */
-export type CoreEventName = 'log' | 'status' | 'health' | 'task' | 'ready'
+export type CoreEventName =
+  | 'log'
+  | 'status'
+  | 'health'
+  | 'task'
+  | 'ready'
+  | 'core-error'
+  | 'core-exit'
 
 /** 日志级别。 */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
@@ -152,6 +159,8 @@ export interface CodeporterApi {
   pickDirectory(title: string): Promise<string | null>
   /** 打开外部链接。 */
   openExternal(url: string): Promise<void>
+  /** 用系统文件管理器打开本地目录（如配置所在文件夹）；成功返回空串，失败返回错误信息。 */
+  openPath(target: string): Promise<string>
   /** 退出应用。 */
   quit(): Promise<void>
   /** 订阅核心事件；返回取消订阅函数。 */

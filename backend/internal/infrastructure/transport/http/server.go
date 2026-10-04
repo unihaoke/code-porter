@@ -219,8 +219,8 @@ func (s *Server) Shutdown() error {
 // healthz 健康检查。
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":       true,
-		"service":  "codeporter-gateway",
+		"ok":      true,
+		"service": "codeporter-gateway",
 		"ws_conns": connCount(s.hub),
 	})
 }

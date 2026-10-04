@@ -119,27 +119,59 @@ func TestEnsureAgentIdentity(t *testing.T) {
 		t.Fatal("missing key must fail")
 	}
 
-	// 旧 token 字段报错。
+	// 只有旧 token、没有新秘钥：仍需报错并给出迁移指引。
+	legacyOnlyPath := filepath.Join(dir, "legacy-only.yaml")
+	writeFile(t, legacyOnlyPath, "agent:\n  token: old-token\n")
+	legacyOnly, err := LoadAgent(legacyOnlyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureAgentIdentity(legacyOnly, legacyOnlyPath); err == nil ||
+		!strings.Contains(err.Error(), "agent.token") {
+		t.Fatalf("legacy yaml token without new key should be rejected, got %v", err)
+	}
+
+	// 已换新秘钥、但文件里残留旧 token：不再阻断启动，且 token 要被清理写回。
 	legacyPath := filepath.Join(dir, "legacy.yaml")
 	writeFile(t, legacyPath, "agent:\n  key: cp_testkey\n  token: old-token\n")
 	legacy, err := LoadAgent(legacyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureAgentIdentity(legacy, legacyPath); err == nil ||
-		!strings.Contains(err.Error(), "agent.token") {
-		t.Fatalf("legacy yaml token should be rejected, got %v", err)
+	legacyID, err := EnsureAgentIdentity(legacy, legacyPath)
+	if err != nil {
+		t.Fatalf("new key must override stale token, got %v", err)
+	}
+	legacyReloaded, err := LoadAgent(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyReloaded.Agent.DeprecatedToken != "" {
+		t.Fatalf("stale token should be wiped on write-back, got %q", legacyReloaded.Agent.DeprecatedToken)
+	}
+	if legacyReloaded.Agent.ID != legacyID {
+		t.Fatalf("instance id mismatch after migration: %q vs %q", legacyReloaded.Agent.ID, legacyID)
 	}
 
-	// 旧 AGENT_TOKEN 环境变量报错。
+	// 旧 AGENT_TOKEN 环境变量、且没有新秘钥时报错。
 	t.Setenv("AGENT_TOKEN", "old-env-token")
+	noKeyCfg, err := LoadAgent(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noKeyCfg.Agent.Key = ""
+	if _, err := EnsureAgentIdentity(noKeyCfg, yamlPath); err == nil ||
+		!strings.Contains(err.Error(), "AGENT_TOKEN") {
+		t.Fatalf("legacy AGENT_TOKEN env without new key should be rejected, got %v", err)
+	}
+
+	// 已配置新秘钥时，残留的 AGENT_TOKEN 环境变量不再阻断（它本就不参与鉴权）。
 	cfg, err := LoadAgent(yamlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EnsureAgentIdentity(cfg, yamlPath); err == nil ||
-		!strings.Contains(err.Error(), "AGENT_TOKEN") {
-		t.Fatalf("legacy AGENT_TOKEN env should be rejected, got %v", err)
+	if _, err := EnsureAgentIdentity(cfg, yamlPath); err != nil {
+		t.Fatalf("new key must override stale AGENT_TOKEN env, got %v", err)
 	}
 	t.Setenv("AGENT_TOKEN", "")
 

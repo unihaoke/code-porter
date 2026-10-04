@@ -24,6 +24,7 @@ const api: CodeporterApi = {
   testCli: (skipProbe: boolean) => ipcRenderer.invoke('cli:test', skipProbe) as Promise<CliTestResult>,
   pickDirectory: (title: string) => ipcRenderer.invoke('dialog:pickDirectory', title) as Promise<string | null>,
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url) as Promise<void>,
+  openPath: (target: string) => ipcRenderer.invoke('shell:openPath', target) as Promise<string>,
   quit: () => ipcRenderer.invoke('app:quit') as Promise<void>,
   onEvent: (cb: (name: CoreEventName, data: unknown) => void) => {
     const handler = (_e: unknown, name: CoreEventName, data: unknown): void => cb(name, data)

@@ -58,7 +58,7 @@ func actor(id user.ID, role user.Role) *user.User {
 type fakeSender struct{}
 
 func (fakeSender) Send(context.Context, *bot.Bot, bot.OutboundMessage) error { return nil }
-func (fakeSender) Supports(bot.Channel) bool                                 { return true }
+func (fakeSender) Supports(bot.Channel) bool                                  { return true }
 
 func TestBotAdminTenantIsolation(t *testing.T) {
 	ctx := context.Background()

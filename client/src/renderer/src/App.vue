@@ -8,7 +8,7 @@ import LogsView from './views/LogsView.vue'
 
 type Tab = 'dashboard' | 'settings' | 'logs'
 
-const { state, init } = useStore()
+const { state, init, toast, dismissToast } = useStore()
 
 // 标签页与 URL hash 同步：既支持 #settings / #logs 深链，
 // 也让自动化截图能直接打开指定视图。
@@ -25,14 +25,9 @@ function selectTab(t: Tab): void {
   tab.value = t
   location.hash = t === 'dashboard' ? '' : t
 }
-const toast = ref<{ text: string; err: boolean } | null>(null)
-let toastTimer: number | undefined
-
-/** 顶部提示，3 秒自动消失。 */
+/** 子视图的轻提示统一走全局 toast 队列（成功 3s、失败 8s 自动消失，也可点击关闭）。 */
 function notify(text: string, err = false): void {
-  toast.value = { text, err }
-  window.clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => (toast.value = null), 3000)
+  toast(text, err ? 'error' : 'info')
 }
 
 const running = computed(() => !!state.status?.running)
@@ -102,6 +97,18 @@ onMounted(() => {
       <LogsView v-else />
     </main>
 
-    <div v-if="toast" class="toast" :class="{ 'toast--err': toast.err }">{{ toast.text }}</div>
+    <!-- 全局提示：右下角堆叠，点击任意一条可立即关闭 -->
+    <div v-if="state.toasts.length" class="toast-wrap">
+      <div
+        v-for="t in state.toasts"
+        :key="t.id"
+        class="toast"
+        :class="{ 'toast--err': t.kind === 'error' }"
+        title="点击关闭"
+        @click="dismissToast(t.id)"
+      >
+        {{ t.text }}
+      </div>
+    </div>
   </div>
 </template>

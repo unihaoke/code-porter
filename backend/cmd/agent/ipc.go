@@ -195,6 +195,9 @@ func (s *ipcServer) dispatch(ctx context.Context, req ipcRequest) {
 		}
 		// MCP.Env 是运行时从 secrets 派生的，不落盘。
 		incoming.MCP.Env = nil
+		// 旧 token 字段已废弃：界面保存时一律剥除，避免历史配置里的 token
+		// 被原样往返写回、永久卡住迁移（即使界面上根本看不到这个字段）。
+		incoming.Agent.DeprecatedToken = ""
 		if err := config.SaveAgent(s.cfgPath, incoming); err != nil {
 			s.respondError(req.ID, "保存失败: "+err.Error())
 			return
@@ -276,6 +279,11 @@ func configToMap(cfg *config.AgentConfig) (map[string]any, error) {
 	out := map[string]any{}
 	if err := yaml.Unmarshal(raw, &out); err != nil {
 		return nil, err
+	}
+	// 旧 token 字段不暴露给界面：否则前端把未知键原样回传，保存时又被写回文件，
+	// 用户即使粘贴了新秘钥也会被残留的 token 卡住。
+	if agent, ok := out["agent"].(map[string]any); ok {
+		delete(agent, "token")
 	}
 	return out, nil
 }
