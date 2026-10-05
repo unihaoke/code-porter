@@ -35,7 +35,7 @@ COPY frontend/ .
 RUN npm run build
 
 # ---- 3. 运行阶段 ----
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata \
     && adduser -D -u 10001 codeporter
