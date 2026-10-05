@@ -81,7 +81,7 @@ jobs:
           #   CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: CodePorter-${{ matrix.goos }}-${{ matrix.goarch }}
           path: client/release/${{ matrix.glob }}
