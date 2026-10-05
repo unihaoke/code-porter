@@ -35,7 +35,7 @@ jobs:
     env:
       CODEPORTER_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/codeporter_test?parseTime=true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v5
         with:
@@ -59,7 +59,7 @@ jobs:
     name: Web Console (Vue)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -83,7 +83,7 @@ jobs:
     name: Desktop Client (Electron)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
