@@ -8,9 +8,9 @@
 |---|---|
 | `/v1/*` | `Authorization: Bearer <秘钥明文>`（秘钥需含 `api` scope），也接受 `X-API-Key` |
 | `/agent/*` | `X-Agent-Token: <秘钥明文>`（秘钥需含 `agent` scope）+ `X-Agent-ID: <实例ID>` + 可选 `X-Agent-Name`；秘钥也可放 `Authorization: Bearer` |
-| `/api/*`（除登录/webhook） | `Authorization: Bearer <会话令牌>`（登录后获得） |
+| `/api/*`（除登录） | `Authorization: Bearer <会话令牌>`（登录后获得） |
 | `/api/users/*`、`/admin/*` | 同上，且要求 **admin 角色** |
-| `POST /api/auth/login`、`/webhook/*`、`/healthz` | 无需鉴权（webhook 由渠道签名校验） |
+| `POST /api/auth/login`、`/healthz` | 无需鉴权 |
 
 鉴权失败返回 401；已登录但权限不足（如 member 调 admin 接口、秘钥缺少所需 scope）返回 403。
 
@@ -70,7 +70,7 @@
 |---|---|---|
 | `GET /api/users` | admin | 用户列表 |
 | `POST /api/users` | admin | `{username,password,role}`，role=admin/member |
-| `DELETE /api/users/{id}` | admin | 删除用户（秘钥/会话/实例/机器人外键级联；不能删自己） |
+| `DELETE /api/users/{id}` | admin | 删除用户（秘钥/会话/实例外键级联；不能删自己） |
 | `POST /api/users/{id}/reset-password` | admin | `{password}`，并踢掉该用户全部会话 |
 | `GET /api/keys` `POST /api/keys` `DELETE /api/keys/{id}` | 本人 | 秘钥自助管理 |
 | `GET /api/users/{id}/keys` `DELETE /api/users/{id}/keys/{keyId}` | admin | 代管指定用户秘钥 |
@@ -166,8 +166,6 @@ data: {"content":"建议提取函数并补充单元测试"}
   "ws_conns": 1,
   "queues": { "local-pc": 0 },
   "tasks": { "pending": 0, "running": 1, "success": 3 },
-  "bots": 2,
-  "bots_enabled": 1,
   "models": [{ "model": "claude-code", "available": true, "agents": [] }]
 }
 ```
@@ -183,89 +181,6 @@ data: {"content":"建议提取函数并补充单元测试"}
 ### `GET /api/models`
 
 返回全部受支持的本地 AI 工具及其在各节点上的可用状态。
-
-### `GET /api/bots`
-
-```json
-{
-  "bots": [{
-    "id": "bot_xxx",
-    "name": "研发群助手",
-    "channel": "feishu",
-    "channel_name": "飞书",
-    "enabled": true,
-    "model": "claude-code",
-    "mode": "pull",
-    "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/demo****ey",
-    "has_secret": true,
-    "has_token": false,
-    "has_aes_key": false,
-    "callback_url": "https://cp.example.com/webhook/feishu/bot_xxx",
-    "can_receive": true,
-    "can_reply": true
-  }]
-}
-```
-
-> 密钥类字段不会回传明文，只返回 `has_*` 标志；Webhook 中的 key 已做掩码。
-
-### `POST /api/bots`
-
-```json
-{
-  "name": "研发群助手",
-  "channel": "feishu",
-  "model": "claude-code",
-  "mode": "pull",
-  "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx",
-  "secret": "签名密钥（飞书）",
-  "token": "Verification Token（飞书）/ 回调 Token（企微）",
-  "aes_key": "43 位 Base64 加密密钥",
-  "system_prompt": "回答请简洁",
-  "mention_only": true,
-  "enabled": true
-}
-```
-
-创建成功返回 `201`。`aes_key` 必须是 43 位 Base64，否则返回 `invalid_param`。
-
-### `PUT /api/bots/{id}`
-
-局部更新：留空的字段保持不变；`aes_key` 传占位值表示不修改（前端用 `__unchanged__`）。
-
-### `POST /api/bots/{id}/toggle`
-
-```json
-{ "enabled": false }
-```
-
-### `DELETE /api/bots/{id}`
-
-删除后对应回调地址立即失效。
-
----
-
-## IM 回调接口
-
-### `POST /webhook/feishu/{bot_id}`
-
-- 配置回调地址时飞书会发 `url_verification`，网关回显 `{"challenge":"..."}`；
-- 消息事件（`im.message.receive_v1`）中 `message_type=text` 的消息会被受理；
-- 开启 Encrypt Key 时请求体为 `{"encrypt":"..."}`，网关用 `SHA256(AESKey)` 作密钥解密。
-
-响应：
-
-```json
-{ "ok": true, "accepted": true, "ignored": false, "task_id": "task_xxx", "reason": "" }
-```
-
-### `GET|POST /webhook/wecom/{bot_id}`
-
-- `GET`：URL 验证，校验签名后解密 `echostr` 并**原样返回明文**（不包 JSON）；
-- `POST`：接收加密消息 XML，解密后取 `MsgType=text` 的 `Content`。
-
-查询串需带 `msg_signature`、`timestamp`、`nonce`。
-企业微信的回调强制加密，机器人必须配置 `token` 与 `aes_key`，否则 `can_receive=false`。
 
 ---
 

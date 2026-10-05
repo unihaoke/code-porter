@@ -6,7 +6,8 @@ import type {
   BotTestResult,
   CliTestResult,
   CoreEventName,
-  CodeporterApi
+  CodeporterApi,
+  ToolsStartResult
 } from '../shared/types'
 
 /**
@@ -28,10 +29,12 @@ const api: CodeporterApi = {
   start: () => ipcRenderer.invoke('agent:start') as Promise<AgentStatus>,
   stop: () => ipcRenderer.invoke('agent:stop') as Promise<AgentStatus>,
   status: () => ipcRenderer.invoke('agent:status') as Promise<AgentStatus>,
-  startBots: () => ipcRenderer.invoke('bot:start') as Promise<AgentStatus>,
-  stopBots: () => ipcRenderer.invoke('bot:stop') as Promise<AgentStatus>,
+  startBots: (channel?: string) => ipcRenderer.invoke('bot:start', channel) as Promise<AgentStatus>,
+  stopBots: (channel?: string) => ipcRenderer.invoke('bot:stop', channel) as Promise<AgentStatus>,
   testBot: (channel?: string) =>
     ipcRenderer.invoke('bot:test', channel) as Promise<BotTestResult>,
+  startTools: () => ipcRenderer.invoke('tools:start') as Promise<ToolsStartResult>,
+  stopTools: () => ipcRenderer.invoke('tools:stop') as Promise<AgentStatus>,
   testCli: (skipProbe: boolean) => ipcRenderer.invoke('cli:test', skipProbe) as Promise<CliTestResult>,
   pickDirectory: (title: string) => ipcRenderer.invoke('dialog:pickDirectory', title) as Promise<string | null>,
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url) as Promise<void>,

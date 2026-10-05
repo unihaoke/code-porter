@@ -15,6 +15,7 @@ import (
 	"github.com/codeporter/code-porter/internal/application/port"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
+	"github.com/codeporter/code-porter/internal/infrastructure/imbot"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
 	"gopkg.in/yaml.v3"
 )
@@ -40,6 +41,8 @@ const (
 	actBotStop    = "bot.stop"
 	actBotStatus  = "bot.status"
 	actBotTest    = "bot.test"
+	actToolsStart = "tools.start"
+	actToolsStop  = "tools.stop"
 	actQuit       = "app.quit"
 )
 
@@ -266,7 +269,14 @@ func (s *ipcServer) dispatch(ctx context.Context, req ipcRequest) {
 		}()
 
 	case actBotStart:
-		// 机器人与代理独立：不要求代理已启动。
+		// 机器人与代理独立：不要求代理已启动。参数可带 channel（feishu/wecom），
+		// 不带时启动所有已启用渠道。
+		var p struct {
+			Channel string `json:"channel"`
+		}
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params, &p)
+		}
 		s.mu.Lock()
 		cur := s.svc
 		s.mu.Unlock()
@@ -277,24 +287,52 @@ func (s *ipcServer) dispatch(ctx context.Context, req ipcRequest) {
 			s.svc = cur
 			s.mu.Unlock()
 		}
-		if err := cur.StartBots(); err != nil {
-			s.respondError(req.ID, "机器人启动失败: "+err.Error())
+		var startErr error
+		if strings.TrimSpace(p.Channel) == "" {
+			// 聚合启动：逐渠道结果中失败的原因已聚合进 error；成功渠道此刻已在运行。
+			_, startErr = cur.StartBots()
+		} else {
+			startErr = cur.StartBot(p.Channel)
+		}
+		if startErr != nil {
+			s.respondError(req.ID, "机器人启动失败: "+startErr.Error())
 			return
 		}
 		s.respond(req.ID, s.statusPayload(), nil)
 
 	case actBotStop:
+		var p struct {
+			Channel string `json:"channel"`
+		}
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params, &p)
+		}
 		s.mu.Lock()
 		cur := s.svc
 		s.mu.Unlock()
-		if cur == nil || !cur.BotsRunning() {
+		if cur == nil {
 			s.respondError(req.ID, "机器人未在运行")
 			return
 		}
-		go func() {
-			cur.StopBots()
-			s.respond(req.ID, s.statusPayload(), nil)
-		}()
+		if strings.TrimSpace(p.Channel) == "" {
+			if !cur.BotsRunning() {
+				s.respondError(req.ID, "机器人未在运行")
+				return
+			}
+			go func() {
+				cur.StopBots()
+				s.respond(req.ID, s.statusPayload(), nil)
+			}()
+		} else {
+			if !cur.BotChannelRunning(p.Channel) {
+				s.respondError(req.ID, "该渠道机器人未在运行: "+p.Channel)
+				return
+			}
+			go func() {
+				cur.StopBot(p.Channel)
+				s.respond(req.ID, s.statusPayload(), nil)
+			}()
+		}
 
 	case actBotStatus:
 		s.respond(req.ID, s.statusPayload(), nil)
@@ -324,6 +362,48 @@ func (s *ipcServer) dispatch(ctx context.Context, req ipcRequest) {
 				return
 			}
 			s.respond(req.ID, res, nil)
+		}()
+
+	case actToolsStart:
+		// 本地 AI 工具与代理 / 机器人都独立：按需创建同一个 Service 实例。
+		// 预热要拉起多个子进程并握手，可能耗时数十秒，异步执行后再回复。
+		go func() {
+			s.mu.Lock()
+			cur := s.svc
+			s.mu.Unlock()
+			if cur == nil {
+				cur = NewService(s.cfgPath, s.cfg, s.log)
+				cur.SetEventHook(s.onEvent)
+				s.mu.Lock()
+				s.svc = cur
+				s.mu.Unlock()
+			}
+			if cur.ToolsRunning() {
+				s.respondError(req.ID, "本地 AI 工具已在运行")
+				return
+			}
+			results, err := cur.StartTools()
+			if err != nil {
+				s.respondError(req.ID, "本地 AI 工具启动失败: "+err.Error())
+				return
+			}
+			s.respond(req.ID, map[string]any{
+				"status":  s.statusPayload(),
+				"results": results,
+			}, nil)
+		}()
+
+	case actToolsStop:
+		s.mu.Lock()
+		cur := s.svc
+		s.mu.Unlock()
+		if cur == nil || !cur.ToolsRunning() {
+			s.respondError(req.ID, "本地 AI 工具未在运行")
+			return
+		}
+		go func() {
+			cur.StopTools()
+			s.respond(req.ID, s.statusPayload(), nil)
 		}()
 
 	default:
@@ -410,7 +490,7 @@ func (s *ipcServer) statusPayload() map[string]any {
 	svc := s.svc
 	s.mu.Unlock()
 	if cfg == nil {
-		return map[string]any{"running": false, "bots": map[string]any{}}
+		return map[string]any{"running": false, "tools_running": false, "bots": map[string]any{}}
 	}
 	if svc != nil {
 		return svc.Status()
@@ -425,17 +505,16 @@ func (s *ipcServer) statusPayload() map[string]any {
 		acfg := cfg.MCP.For(m)
 		tools = append(tools, map[string]any{
 			"model": m.String(), "label": acfg.Command, "enabled": acfg.Enabled,
-			"mode": string(acfg.Mode), "command": acfg.Command,
+			"mode": string(acfg.Mode), "command": acfg.Command, "running": false,
 		})
 	}
-	fc := cfg.Bots.Feishu
-	botModel := fc.Model
-	if strings.TrimSpace(botModel) == "" {
-		botModel = string(model.ClaudeCode)
+	bots := make(map[string]any, len(imbot.Channels()))
+	for _, ch := range imbot.Channels() {
+		bots[ch] = botStatusItem(cfg, ch, nil)
 	}
 	return map[string]any{
-		"running": false, "agent_running": false,
-		"version": "0.2.0",
+		"running": false, "agent_running": false, "tools_running": false,
+		"version":    "0.2.0",
 		"agent_id":   cfg.Agent.ID,
 		"agent_name": cfg.Agent.Name,
 		"has_key":    cfg.Agent.Key != "",
@@ -443,14 +522,7 @@ func (s *ipcServer) statusPayload() map[string]any {
 		"log_level":  cfg.Log.Level, "max_concurrency": cfg.WorkerPool.MaxConcurrency,
 		"queue_size": cfg.WorkerPool.QueueSize, "direct_mode": cfg.Direct.Enabled,
 		"work_dir": work, "config_path": s.cfgPath, "ai_tools": tools,
-		"bots": map[string]any{
-			"feishu": map[string]any{
-				"running": false, "enabled": fc.Enabled,
-				"configured": strings.TrimSpace(fc.AppID) != "" && strings.TrimSpace(fc.AppSecret) != "",
-				"app_id": fc.AppID, "model": botModel,
-				"mention_only": fc.MentionOnly,
-			},
-		},
+		"bots": bots,
 	}
 }
 
@@ -461,6 +533,7 @@ func (s *ipcServer) shutdown() {
 		cur := s.svc
 		s.mu.Unlock()
 		if cur != nil {
+			cur.StopTools()
 			cur.StopBots()
 			cur.Stop()
 		}

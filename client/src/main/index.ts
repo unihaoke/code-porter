@@ -3,7 +3,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 
 import { CoreProcess } from './core-process'
-import type { AgentConfig, CliTestResult, AgentStatus } from '../shared/types'
+import type { AgentConfig, CliTestResult, AgentStatus, ToolsStartResult } from '../shared/types'
 
 const isDev = !app.isPackaged
 
@@ -169,8 +169,12 @@ function registerIpc(): void {
   ipcMain.handle('agent:start', () => need().call<AgentStatus>('agent.start', undefined, 30_000))
   ipcMain.handle('agent:stop', () => need().call<AgentStatus>('agent.stop', undefined, 60_000))
   ipcMain.handle('agent:status', () => need().call<AgentStatus>('agent.status', undefined, 20_000))
-  ipcMain.handle('bot:start', () => need().call<AgentStatus>('bot.start', undefined, 30_000))
-  ipcMain.handle('bot:stop', () => need().call<AgentStatus>('bot.stop', undefined, 60_000))
+  ipcMain.handle('bot:start', (_e, channel?: string) =>
+    need().call<AgentStatus>('bot.start', channel ? { channel } : undefined, 30_000)
+  )
+  ipcMain.handle('bot:stop', (_e, channel?: string) =>
+    need().call<AgentStatus>('bot.stop', channel ? { channel } : undefined, 60_000)
+  )
   ipcMain.handle('bot:status', () => need().call<AgentStatus>('bot.status', undefined, 20_000))
   ipcMain.handle('bot:test', (_e, channel?: string) =>
     need().call<import('../shared/types').BotTestResult>('bot.test', { channel: channel ?? 'feishu' }, 30_000)
@@ -178,6 +182,11 @@ function registerIpc(): void {
   ipcMain.handle('cli:test', (_e, skipProbe: boolean) =>
     need().call<CliTestResult>('cli.test', { skip_probe: skipProbe }, 6 * 60_000)
   )
+  // 预热要逐个拉起 MCP 子进程并握手，留 90s；停止只是关子进程，30s 足够。
+  ipcMain.handle('tools:start', () =>
+    need().call<ToolsStartResult>('tools.start', undefined, 90_000)
+  )
+  ipcMain.handle('tools:stop', () => need().call<AgentStatus>('tools.stop', undefined, 30_000))
   ipcMain.handle('dialog:pickDirectory', async (_e, title: string) => {
     const r = await dialog.showOpenDialog(win!, {
       title: title || '选择目录',

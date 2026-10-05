@@ -1,18 +1,22 @@
 # IM 机器人接入指南
 
-| 渠道 | 推荐接入方式 | 运行位置 | 是否需要公网域名 |
-|---|---|---|---|
-| 飞书 | **客户端长连接**（官方 SDK WebSocket） | 本地客户端的机器人服务（与代理独立） | 否 |
-| 飞书 | 自定义机器人 Webhook（旧方式，备选） | 网关 | 是 |
-| 企业微信 | 群机器人 Webhook + 应用回调 | 网关 | 是 |
+| 渠道 | 接入方式 | 运行位置 | 是否需要公网域名 | 流式回复 |
+|---|---|---|---|---|
+| 飞书 | **客户端长连接**（官方 SDK WebSocket） | 本地客户端（与代理独立、与其他渠道独立） | 否 | 单张流式卡片（卡片 2.0 打字机） |
+| 企业微信 | **智能机器人 API 长连接**（openws WebSocket） | 本地客户端（与代理独立、与其他渠道独立） | 否 | 流式消息（Markdown 增量更新） |
 
-飞书支持「长连接接收事件」：客户端主动向飞书建立出站 WebSocket，消息直接在本机调用
-AI 工具处理、再通过 OpenAPI 回复，**不经过网关队列，也不需要公网域名、回调验签与
-Encrypt Key**。企业微信没有长连接模式，仍需网关具备公网回调地址。
+两个渠道都采用「客户端主动建立出站 WebSocket」的模式：消息直接在本机调用
+AI 工具处理、再通过平台 OpenAPI 回复，**不经过网关队列，也不需要公网域名、回调验签与
+Encrypt Key**。**各渠道互相独立，可同时启用、分别启停**。
 
-> **机器人服务与代理是两个独立服务**：可以只启动机器人（飞书消息本地闭环）而不启动网关代理，
-> 反之亦然。Windows 客户端在「概览」页分别提供「代理服务」和「机器人服务 · 飞书」两张控制卡，
-> 改完飞书配置保存后，只需单独重启机器人服务，不用动代理。
+> 服务端网关侧的 Webhook 机器人（飞书自定义机器人回调、企业微信应用回调）已整体下线，
+> 控制台不再提供「机器人」菜单；IM 机器人统一由本地客户端承载。
+
+> **机器人服务与代理是两个独立服务，机器人各渠道之间也彼此独立**：可以只启动机器人
+> （IM 消息本地闭环）而不启动网关代理，也可以飞书、企业微信只开其一或同时开启。
+> Windows 客户端在「概览」页提供「代理服务」与「IM 机器人」两张控制卡，机器人卡内
+> 每个渠道一行、各有独立的启动/停止按钮；改完某个渠道的配置保存后，只需单独重启该渠道，
+> 不用动代理，也不影响另一个渠道。
 
 ---
 
@@ -47,13 +51,14 @@ bots:
 
 保存后：
 
-- **Windows GUI**：到「概览」页在「机器人服务 · 飞书」卡上点「启动机器人」；
-  「配置」页的「测试连接」按钮可只校验 App ID / Secret（换取 tenant_access_token），
+- **Windows GUI**：到「概览」页在「IM 机器人」卡的「飞书」一行点「启动」；
+  「配置」页飞书卡片里的「测试连接」按钮可只校验 App ID / Secret（换取 tenant_access_token），
   不建立长连接——注意它校验的是**已保存**的配置，改完先保存再测；
   改动本地 AI 设置（工作目录、CLI 命令、密钥、工具开关）后，点「本地 AI」卡片里的
-  **「保存并重启本地 AI」**即可自动重启当前运行中的代理 / 机器人，无需逐个手动重启；
+  **「保存并重启本地 AI」**即可自动重启当前运行中的代理 / 机器人渠道，无需逐个手动重启；
 - **命令行 / IPC**：通过 `bot.start`、`bot.stop`、`bot.status`、`bot.test` 动作控制，
-  与 `agent.start/stop` 互不影响。
+  参数可带 `{"channel":"feishu"}` 指定渠道（不带时操作全部已启用渠道），
+  与 `agent.start/stop` 及 `wecom` 渠道互不影响。
 
 支持的环境变量（优先级高于 yaml）：
 
@@ -88,8 +93,9 @@ bots:
 - 长连接由 SDK 维护心跳与自动重连（指数退避）；
 - **防重复回复（双重保障）**：
   1. 事件回调内置 10 分钟窗口的 message_id 去重，平台超时重推 / 重连重投不会二次执行；
-  2. 配置目录下的 `.feishu-bot.lock` 心跳锁保证**同一台机器上同一 App ID 只有一个实例**，
+  2. 配置目录下的 `.imbot-feishu-<身份哈希>.lock` 心跳锁保证**同一台机器上同一 App ID 只有一个实例**，
      第二个实例启动会被拒绝并报告占用方 PID；进程崩溃后锁在约 20s 心跳超时后自动释放。
+     锁文件按「渠道 + 身份」命名，飞书与企业微信、不同 App ID 之间互不阻塞。
 
      注意文件锁只管同一台机器。**两台机器（或本机 GUI + 命令行）用同一个 App ID 同时上线**
      仍会各收到一部分消息、表现为「回复两次」——一个应用只在一处部署即可；
@@ -97,34 +103,76 @@ bots:
 
 ---
 
-## 二、飞书：网关 Webhook（旧方式，备选）
+## 二、企业微信：智能机器人 API 长连接
 
-适用于继续使用「控制台 → 机器人」管理的存量部署，需要网关有公网 HTTPS 地址。
+企业微信「智能机器人」支持 **API 模式 · 长连接**接入：客户端向
+`wss://openws.work.weixin.qq.com` 建立出站 WebSocket，订阅后实时接收消息回调，
+并以**流式消息**（Markdown）增量更新回复。无需公网域名、无需配置回调 URL，
+也不依赖企业微信官方 Go SDK（客户端直接实现 WebSocket 帧协议，仅用 gorilla/websocket）。
 
-1. 控制台「机器人」→ 新建，渠道选飞书，保存后复制**回调地址**
-   （形如 `https://cp.example.com/webhook/feishu/bot_xxx`）；
-2. 出站结果用群「自定义机器人」Webhook（`/open-apis/bot/v2/hook/...`），
-   开启签名校验时把签名密钥填入「签名 Secret」；
-3. 开放平台事件订阅选「将事件发送至开发者服务器」并填入回调地址，
-   订阅 `im.message.receive_v1`；Encrypt Key / Verification Token 按需填入控制台；
-4. 网关收到 `url_verification` 会原样回显 `challenge`。
+### 1. 企业微信管理后台配置
 
-> 新部署优先使用第一节的客户端长连接；两种方式可共存于不同机器人配置，互不影响。
+在[企业微信管理后台](https://work.weixin.qq.com/wework_admin/)：
+
+1. 「安全与管理 → 管理工具 → **智能机器人**」中创建机器人；
+2. 启用 **API 模式**，接入方式选择 **「长连接」**；
+3. 复制机器人的 **Bot ID** 与 **Secret**；
+4. 配置可见范围并发布，成员即可在单聊中找到机器人、或把它加进群并 @ 它。
+
+### 2. 客户端配置
+
+编辑 `configs/agent.yaml`（或 Windows GUI「配置」页的「企业微信机器人」分组）：
+
+```yaml
+bots:
+  wecom:
+    enabled: true
+    bot_id: "bot_xxxxxxxxxxxxxxxx"
+    secret: "xxxxxxxxxxxxxxxx"          # 建议改用环境变量 WECOM_BOT_SECRET
+    model: ""                           # 空=claude-code，可选 trae/codebuddy/codex
+    mention_only: true                  # 群聊仅响应 @机器人（单聊始终响应）
+    system_prompt: ""                   # 可选，拼在每条消息前
+```
+
+保存后在「概览」页「IM 机器人」卡的「企业微信」一行点「启动」；配置页的「测试连接」
+会完成一次「拨号 + 订阅握手」（约 12s 超时），校验 Bot ID / Secret 是否被平台接受，
+**不会保持长连接**（校验的是已保存配置，改完先保存）。
+
+支持的环境变量（优先级高于 yaml）：
+
+| 变量 | 对应字段 |
+|---|---|
+| `WECOM_BOT_ID` | bot_id |
+| `WECOM_BOT_SECRET` | secret（推荐，避免密钥落盘） |
+| `WECOM_BOT_ENABLED` | enabled（`true`/`1`） |
+| `WECOM_BOT_MODEL` | model |
+| `WECOM_BOT_MENTION_ONLY` | mention_only |
+
+### 3. 行为说明与平台限制
+
+- **独立运行时**：与飞书渠道相同，企微机器人拥有独立的 MCP 注册表、协程池与单实例锁，
+  代理未启动 / 网关不可达 / 飞书渠道未启用都不影响它；队列满时直接回复「本地任务队列已满，请稍后再发」；
+- **流式回复（`aibot_respond_msg` + `msgtype: stream`）**：每条消息只有一条流式消息，
+  帧头 `req_id` 必须透传回调帧的 `req_id`，因此**只有被动回复支持流式**；
+  AI 处理过程中按约 **2s** 节流串行 PATCH（平台频控比飞书严），内容为 Markdown：
+  - **思考与工具过程**渲染为灰色引用区（`<font color="comment">` 引用块），
+    reasoning 与工具调用实时追加，超过约 1500 字截头保尾；
+  - **正文开始生成后，过程区自动折叠**为最后几行的摘要置于正文之前；
+  - 失败时摘要以警告色（`color="warning"`）显示；
+  - 单帧内容上限 **20480 字节**（按 UTF-8 字节截头保尾，不会切断 emoji），
+    整条流式消息必须在 **10 分钟**内 `finish`，限流约 30 条/分钟、1000 条/小时；
+- **连接维护**：每 30s 发 `ping`，连续 2 次无 ACK 判定连接死亡并重连
+  （指数退避 1s→30s）；收到平台 `disconnected_event`（同一 Bot ID 在别处登录被顶替）
+  会立即重连——同一 Bot ID **全平台只允许一条长连接**；
+- **主动推送**（如系统通知）走 `aibot_send_msg`，不带 `req_id`、**不支持 stream**，
+  单聊 `chatid` 即用户 userid；
+- **防重复回复**：消息按 `msgid` 去重；配置目录下的
+  `.imbot-wecom-<身份哈希>.lock` 心跳锁保证同机同 Bot ID 单实例（约 20s 超时自动释放）。
+  跨机器同 Bot ID 部署仍会互踢/重复，需在平台侧保证只部署一处。
 
 ---
 
-## 三、企业微信（网关 Webhook）
-
-1. 群设置 → 群机器人 → 添加机器人，复制 Webhook
-   （`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx`）填入控制台；
-2. 管理后台 → 自建应用 → 接收消息 → API 接收，URL 填控制台给出的回调地址
-   （形如 `https://cp.example.com/webhook/wecom/bot_xxx`）；
-3. 随机生成的 **Token** 与 **EncodingAESKey** 填入控制台；
-   企微回调强制加密，二者缺一不可（缺则 `can_receive=false`，消息被忽略）。
-
----
-
-## 四、验证与排查
+## 三、验证与排查
 
 **飞书长连接模式：**
 
@@ -142,21 +190,23 @@ bots:
 | 卡片一直「处理中…」不结束 | 查看本机 AI 执行日志；单任务上限约 15 分钟，超时卡片会置为「执行失败」 |
 | 只收到「队列已满」 | 降低 `max_concurrency` 之外的任务负载，或调大 `worker_pool.queue_size` |
 
-**Webhook 模式：**
+**企业微信长连接模式：**
 
-```bash
-curl -X POST https://cp.example.com/webhook/feishu/bot_xxx \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"url_verification","challenge":"ping","token":""}'
-# 期望返回 {"challenge":"ping"}
-```
-
-网关侧日志关键字：`bot message accepted`、`bot replied`、`reply to im failed`。
+| 现象 | 检查项 |
+|---|---|
+| 日志无 `im bot started`（channel=wecom） | 概览页「IM 机器人」卡企微行是否已启动；`bots.wecom.enabled` 是否为 true；Bot ID/Secret 是否齐全 |
+| 「测试连接」提示企业微信拒绝凭证（errcode 60011 等） | Bot ID / Secret 是否复制正确；机器人是否已启用 API 模式并发布到可见范围 |
+| 订阅超时（12s 内未收到回执） | 本机网络 / 出站代理能否访问 `openws.work.weixin.qq.com:443`；防火墙是否放行 WebSocket 升级 |
+| 日志反复 `im bot exited`（channel=wecom） | 同一 Bot ID 是否在另一台机器 / 另一个客户端上连着（平台只允许一条连接，会推 `disconnected_event` 顶替） |
+| 启动即报锁占用（另一实例 PID） | 同机已有一个实例在跑同一 Bot ID；停掉其一，或等约 20s 让崩溃实例的心跳锁过期 |
+| 连上了但消息无反应 | 群聊是否 @了机器人（mention_only=true 时仅响应 @）；机器人是否在群内、可见范围是否包含发送者 |
+| 流式消息中途停止更新 | 单条流必须在 10 分钟内 finish；单帧 content 不超过 20480 字节；检查是否触发 30 条/分钟频控，必要时调大客户端节流 |
+| 主动通知发不出去 | 主动推送（`aibot_send_msg`）不支持流式且必须带有效 chatid（单聊为 userid）；流式回复只能用于被动消息回调 |
 
 ---
 
-## 五、安全建议
+## 四、安全建议
 
-- 客户端模式的 App Secret 优先用环境变量注入；写入 yaml 时文件权限为 0600，勿提交到仓库；
-- Webhook 模式必须使用 HTTPS，并填写 Token / Encrypt Key 防止伪造投递；
-- 群机器人 Webhook 等同于「往群里发消息的钥匙」，泄露后请立即在 IM 平台重置。
+- 客户端模式的渠道密钥（飞书 App Secret、企业微信 Secret）优先用环境变量
+  （`FEISHU_APP_SECRET` / `WECOM_BOT_SECRET`）注入；写入 yaml 时文件权限为 0600，
+  勿提交到仓库。GUI 与 IPC 状态只回报「已配置」布尔状态与脱敏的身份标识，绝不回传密钥。

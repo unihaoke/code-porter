@@ -1,6 +1,9 @@
 package port
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ChatType 本地 IM 机器人的会话类型。
 type ChatType string
@@ -17,10 +20,11 @@ type IMBotMessage struct {
 	// EventID 平台事件/消息 ID，用于幂等去重。
 	EventID string
 	// ChatID 会话 ID，回复时定位。
+	// 飞书：chat_id；企业微信：群聊为 chatid，单聊为发送者 userid（平台主动推送规则）。
 	ChatID string
 	// ChatType p2p / group。
 	ChatType ChatType
-	// SenderID 发送者在应用内的 open_id。
+	// SenderID 发送者在应用内的 open_id / userid。
 	SenderID string
 	// Text 去掉 @占位符后的纯文本。
 	Text string
@@ -28,6 +32,19 @@ type IMBotMessage struct {
 	RawText string
 	// Mentioned 该消息是否 @了机器人。
 	Mentioned bool
+	// ReplyToken 平台回调关联凭证，回复该消息时需原样透传：
+	// 企业微信=回调帧 headers.req_id（流式回复必须与回调同 req_id）；飞书无此概念，留空。
+	ReplyToken string
+}
+
+// IMReplyTarget 一条出站消息的定位目标。
+//
+// 不同平台对「会话定位」与「回调关联」的要求不同：
+// 飞书只认 ChatID；企业微信回复回调消息必须带 ReplyToken（req_id），
+// 无回调上下文的主动推送才只用 ChatID。
+type IMReplyTarget struct {
+	ChatID     string
+	ReplyToken string
 }
 
 // IMCardPhase 流式卡片的生命周期阶段，决定头部颜色与 streaming_mode。
@@ -63,18 +80,45 @@ type IMCardState struct {
 	Footer string
 }
 
-// IMBotRunner 本地 IM 机器人运行时端口（基础设施层按平台实现，如飞书长连接）。
+// IMBotCredentialTest 凭证测试的平台无关结果。
+type IMBotCredentialTest struct {
+	OK            bool
+	Detail        string
+	ExpireSeconds int
+	Extra         map[string]string
+}
+
+// IMBotRunner 本地 IM 机器人运行时端口（基础设施层按平台实现：飞书长连接、企微长连接等）。
 //
 // 与网关无关：机器人运行在 Agent 进程内，消息直接本地处理。
 type IMBotRunner interface {
-	// Start 建立连接并阻塞运行，直到 ctx 取消；SDK 内部负责心跳与自动重连。
+	// Start 建立连接并阻塞运行，直到 ctx 取消；实现内部负责心跳与自动重连。
 	Start(ctx context.Context) error
 	// SendText 向会话发送纯文本（用于「已收到」等短通知）。
-	SendText(ctx context.Context, chatID, text string) error
+	SendText(ctx context.Context, target IMReplyTarget, text string) error
 	// SendCard 向会话发送一次性卡片/markdown 正文（不做后续更新，用于兜底通知）。
-	SendCard(ctx context.Context, chatID, title, markdown string) error
+	SendCard(ctx context.Context, target IMReplyTarget, title, markdown string) error
 	// OpenStreamCard 创建一张流式卡片并返回平台消息 ID，后续用 UpdateStreamCard 更新。
-	OpenStreamCard(ctx context.Context, chatID string, state IMCardState) (messageID string, err error)
+	OpenStreamCard(ctx context.Context, target IMReplyTarget, state IMCardState) (messageID string, err error)
 	// UpdateStreamCard 用完整状态整体更新卡片；调用方负责节流与串行化。
 	UpdateStreamCard(ctx context.Context, messageID string, state IMCardState) error
+}
+
+// IMMessageHandler 入站消息回调（由应用层的 IMBotService 提供）。
+// 返回 error 时平台可能按重试策略重推该事件（业务层需自行幂等去重）。
+type IMMessageHandler func(ctx context.Context, msg IMBotMessage) error
+
+// IMBotCredentialTester 是 runner 的可选能力：不建立事件循环、仅验证凭证。
+// 飞书以换取 token 校验；企业微信以「订阅一次再断开」校验。
+type IMBotCredentialTester interface {
+	TestCredentials(ctx context.Context) (IMBotCredentialTest, error)
+}
+
+// IMBotCardPacer 是 runner 的可选能力：声明平台流式更新的节拍与寿命约束。
+// 应用层 cardStream 在 runner 实现该接口时采用平台参数，否则用内置默认值。
+type IMBotCardPacer interface {
+	// CardFlushInterval 两次卡片整体更新之间的最小间隔（平台频控兜底）。
+	CardFlushInterval() time.Duration
+	// MaxCardLifetime 从建卡到终态的最大允许时长（平台会强制结束超时的流式消息）。
+	MaxCardLifetime() time.Duration
 }

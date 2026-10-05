@@ -117,11 +117,8 @@ func runHeadless(configPath string) error {
 	if err := svc.Start(); err != nil {
 		return err
 	}
-	if cfg.Bots.Feishu.Enabled {
-		if err := svc.StartBots(); err != nil {
-			log.Warn("feishu bot not started: " + err.Error())
-		}
-	}
+	// 各 IM 渠道相互独立：逐个启动配置中启用的渠道，单个失败只告警不阻断其他渠道。
+	svc.StartEnabledBots()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

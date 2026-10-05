@@ -18,6 +18,8 @@ export type IpcAction =
   | 'bot.stop'
   | 'bot.status'
   | 'bot.test'
+  | 'tools.start'
+  | 'tools.stop'
   | 'app.quit'
 
 /** Go 核心推送的事件。 */
@@ -47,21 +49,35 @@ export interface AiToolStatus {
   enabled: boolean
   mode: string
   command: string
+  /** MCP 模式常驻子进程是否已被「启动本地 AI 工具」拉起（CLI 模式恒为 false）。 */
+  running?: boolean
 }
 
-/** 单个 IM 机器人的运行/配置状态。 */
-export interface FeishuBotStatus {
+/** 支持的 IM 机器人渠道名（与 Go 侧 imbot.Channels 一致）。 */
+export type BotChannel = 'feishu' | 'wecom'
+
+/**
+ * 单个 IM 渠道的运行/配置状态。
+ * 形状渠道无关：飞书 / 企业微信都用同一结构，新增渠道无需改前端类型。
+ */
+export interface BotRuntimeStatus {
   running: boolean
   enabled: boolean
   configured: boolean
-  app_id: string
+  /** 渠道身份标识（飞书 = App ID，企业微信 = Bot ID）；绝不回传 secret。 */
+  credential_id: string
   model: string
   mention_only: boolean
+  /** 渠道历史展示键，按渠道二选一出现。 */
+  app_id?: string
+  bot_id?: string
 }
 
-/** 机器人整体状态。 */
+/** 各 IM 渠道状态，键为渠道名；后端始终回传全部已注册渠道。 */
 export interface BotsStatus {
-  feishu: FeishuBotStatus
+  feishu: BotRuntimeStatus
+  wecom: BotRuntimeStatus
+  [channel: string]: BotRuntimeStatus
 }
 
 /** 代理运行状态。 */
@@ -80,7 +96,24 @@ export interface AgentStatus {
   work_dir?: string
   config_path?: string
   ai_tools?: AiToolStatus[]
+  /** 本地 AI 工具预热运行时是否已启动（独立于代理 / 机器人）。 */
+  tools_running?: boolean
   bots?: BotsStatus
+}
+
+/** 单个本地 AI 工具的启动（预热）结果。 */
+export interface ToolsStartItem {
+  model: string
+  label: string
+  mode: string
+  ok: boolean
+  detail: string
+}
+
+/** 「启动本地 AI 工具」响应：最新状态 + 各工具预热结果。 */
+export interface ToolsStartResult {
+  status: AgentStatus
+  results: ToolsStartItem[]
 }
 
 /** 机器人「测试连接」结果。 */
@@ -139,9 +172,21 @@ export interface FeishuBotConfig {
   system_prompt: string
 }
 
-/** 本地 IM 机器人配置。 */
+/** 企业微信智能机器人配置（与 agent.yaml 的 bots.wecom 一致，API 长连接模式）。 */
+export interface WeComBotConfig {
+  enabled: boolean
+  bot_id: string
+  secret: string
+  model: string
+  mention_only: boolean
+  system_prompt: string
+}
+
+/** 本地 IM 机器人配置，每个渠道一个独立开关。 */
 export interface BotsConfig {
   feishu: FeishuBotConfig
+  wecom: WeComBotConfig
+  [channel: string]: FeishuBotConfig | WeComBotConfig
 }
 
 /** 配置对象的通用形状（键名与 agent.yaml 一致）。 */
@@ -199,12 +244,16 @@ export interface CodeporterApi {
   stop(): Promise<AgentStatus>
   /** 读取状态。 */
   status(): Promise<AgentStatus>
-  /** 启动 IM 机器人（与代理独立）。 */
-  startBots(): Promise<AgentStatus>
-  /** 停止 IM 机器人。 */
-  stopBots(): Promise<AgentStatus>
+  /** 启动 IM 机器人（与代理独立）；带 channel 时只启动该渠道，不带启动全部已启用渠道。 */
+  startBots(channel?: string): Promise<AgentStatus>
+  /** 停止 IM 机器人；带 channel 时只停该渠道，不带停止全部渠道。 */
+  stopBots(channel?: string): Promise<AgentStatus>
   /** 测试机器人凭证/连通性（不建立长连接）。 */
   testBot(channel?: string): Promise<BotTestResult>
+  /** 启动（预热）配置中已启用的本地 AI 工具，独立于代理 / 机器人。 */
+  startTools(): Promise<ToolsStartResult>
+  /** 停止本地 AI 工具预热运行时。 */
+  stopTools(): Promise<AgentStatus>
   /** 测试本地 AI 连通性。 */
   testCli(skipProbe: boolean): Promise<CliTestResult>
   /** 选择目录（原生对话框）。 */

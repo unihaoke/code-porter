@@ -11,7 +11,6 @@ import (
 	"github.com/codeporter/code-porter/internal/application/gateway"
 	"github.com/codeporter/code-porter/internal/application/port"
 	"github.com/codeporter/code-porter/internal/domain/apikey"
-	"github.com/codeporter/code-porter/internal/domain/bot"
 	"github.com/codeporter/code-porter/internal/domain/task"
 	"github.com/codeporter/code-porter/internal/domain/user"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
@@ -36,23 +35,20 @@ type Server struct {
 
 // Deps 构造网关服务所需的依赖。
 type Deps struct {
-	Config     *config.GatewayConfig
-	Auth       *authsvc.Service
-	Registry   *gateway.AgentRegistry
-	Submit     *gateway.SubmitTaskUseCase
-	Chat       *gateway.ChatUseCase
-	Pull       *gateway.PullTasksUseCase
-	Ack        *gateway.AckTaskUseCase
-	Health     *gateway.ReportHealthUseCase
-	Hub        *ws.Hub
-	QueueRepo  QueueStats
-	TaskRepo   task.TaskRepository
-	Users      user.Repository
-	Bots       *gateway.BotAdminUseCase
-	BotRepo    bot.BotRepository
-	BotInbound *gateway.BotInboundUseCase
-	Logger     port.Logger
-	Policy     gateway.TaskPolicy
+	Config    *config.GatewayConfig
+	Auth      *authsvc.Service
+	Registry  *gateway.AgentRegistry
+	Submit    *gateway.SubmitTaskUseCase
+	Chat      *gateway.ChatUseCase
+	Pull      *gateway.PullTasksUseCase
+	Ack       *gateway.AckTaskUseCase
+	Health    *gateway.ReportHealthUseCase
+	Hub       *ws.Hub
+	QueueRepo QueueStats
+	TaskRepo  task.TaskRepository
+	Users     user.Repository
+	Logger    port.Logger
+	Policy    gateway.TaskPolicy
 }
 
 // NewServer 构造网关服务并装配路由。
@@ -86,7 +82,7 @@ func NewServer(d Deps) *Server {
 	// 升级成功的瞬间被关闭，Agent 侧表现为毫秒级重连风暴。
 	agentHandlers := NewAgentHandlers(d.Pull, d.Ack, d.Health, d.Registry, d.Hub, d.Logger).
 		WithBaseContext(serveCtx)
-	console := NewConsoleHandlers(d.Registry, d.TaskRepo, d.QueueRepo, d.BotRepo, d.Users, d.Hub, d.Logger)
+	console := NewConsoleHandlers(d.Registry, d.TaskRepo, d.QueueRepo, d.Users, d.Hub, d.Logger)
 	authH := NewAuthHandlers(d.Auth, nil, d.Logger)
 	usersH := NewUsersHandlers(d.Auth, d.Logger)
 	keysH := NewKeysHandlers(d.Auth, d.Logger)
@@ -127,25 +123,6 @@ func NewServer(d Deps) *Server {
 	mux.HandleFunc("GET /api/models", s.withCommon(WithSessionAuth(sessionAuth, console.Models)))
 	mux.HandleFunc("GET /api/overview", s.withCommon(WithSessionAuth(sessionAuth, console.Overview)))
 	mux.HandleFunc("POST /api/chat", s.withCommon(WithSessionAuth(sessionAuth, chat.ServeHTTP)))
-
-	// 机器人管理（会话鉴权）。
-	if d.Bots != nil {
-		bots := NewBotHandlers(d.Bots, cfg.Server.PublicAddr, d.Logger)
-		mux.HandleFunc("GET /api/bots", s.withCommon(WithSessionAuth(sessionAuth, bots.List)))
-		mux.HandleFunc("POST /api/bots", s.withCommon(WithSessionAuth(sessionAuth, bots.Create)))
-		mux.HandleFunc("GET /api/bots/{id}", s.withCommon(WithSessionAuth(sessionAuth, bots.Get)))
-		mux.HandleFunc("PUT /api/bots/{id}", s.withCommon(WithSessionAuth(sessionAuth, bots.Update)))
-		mux.HandleFunc("DELETE /api/bots/{id}", s.withCommon(WithSessionAuth(sessionAuth, bots.Delete)))
-		mux.HandleFunc("POST /api/bots/{id}/toggle", s.withCommon(WithSessionAuth(sessionAuth, bots.Toggle)))
-	}
-
-	// IM 机器人回调（平台调用，不经会话/秘钥鉴权；回调内按 bot 归属解析租户）。
-	if d.BotInbound != nil && d.BotRepo != nil {
-		hooks := NewWebhookHandlers(d.BotRepo, d.BotInbound, d.Logger)
-		mux.HandleFunc("POST /webhook/feishu/{id}", s.withCommon(hooks.Feishu))
-		mux.HandleFunc("GET /webhook/wecom/{id}", s.withCommon(hooks.Wecom))
-		mux.HandleFunc("POST /webhook/wecom/{id}", s.withCommon(hooks.Wecom))
-	}
 
 	// 健康检查与运维接口（运维接口需 admin 会话）。
 	mux.HandleFunc("GET /healthz", s.healthz)

@@ -60,17 +60,31 @@ make docker-up        # docker compose 一键部署
 
 ## 改动时的注意事项
 
-- **新增 IM 渠道**：在 `internal/domain/bot/channel.go` 加渠道常量 →
-  在 `internal/infrastructure/bot/` 加解析与发送实现 → 在 `Sender.Supports` 注册。
+- **新增 IM 渠道（在本地客户端，不在网关）**：机器人架构是渠道无关的「简单工厂 + 策略」，
+  按以下顺序接线即可，业务编排不要写进 runner：
+  1. 新建 `internal/infrastructure/<channel>bot/` 包实现 `port/im_bot.go` 的 `IMBotRunner`
+     （长连接 + 重连退避 + 心跳；可选实现 `IMBotCredentialTester`、`IMBotCardPacer`），
+     参考 `infrastructure/feishubot`（飞书 SDK）与 `infrastructure/wecombot`（裸 WebSocket）；
+  2. 在 `infrastructure/imbot/factory.go` 注册渠道常量、`Credentials` 字段与 `New(spec)` 分支；
+  3. `infrastructure/config` 加 `bots.<channel>` 配置节（yaml tag）、环境变量与 `configs/agent.yaml` 模板；
+  4. `cmd/agent/service.go` 的 `channelBotConfig` 加配置投影（凭证字段名渠道各异），
+     运行时按渠道存于 `bots map[string]*botRuntime`（独立 pool/MCP registry/锁），
+     StartBot/StopBot/TestBot 与 IPC `bot.*`（参数 `{"channel":...}`）无需改结构；
+  5. 单实例锁一律用 `pkg/lockfile`（按「渠道+身份」命名），消息处理复用
+     `application/agent/im_bot_service.go` 的 `IMBotService`，不要新写消息服务；
+  6. 客户端五层（shared types → main → preload → store → Settings/Dashboard）跟着加渠道条目。
+  网关侧没有也不应有机器人菜单与 webhook 接口。
 - **新增对外接口**：先写用例（application），再写 handler（infrastructure/transport/http），
   最后在 `server.go` 注册路由并套上对应鉴权中间件（API Key / Agent Token / Admin Token）。
 - **任务事件流**：提交任务前必须先订阅 broker，否则可能丢事件；终态事件要发布，
   调用方读完终止事件后要 `Close()` 订阅。
 - **WebSocket 长连接**：必须用与 HTTP 请求无关的根上下文，`r.Context()` 在 handler 返回后会被取消。
-- **IM 回调有超时**（飞书 3s、企微 5s）：回调 handler 必须立即返回，任务异步执行后通过 Webhook 回推。
+- **IM 消息回调有超时**（飞书 3s）：客户端机器人 OnMessage 的受理判断（@过滤、去重）
+  必须立即返回，执行与卡片更新全部异步进行（机器人跑在本地 Agent 进程，不经网关）。
 - **前端 SSE**：`/api/chat` 是 POST + SSE（EventSource 不支持 POST，用 fetch 读流）。
   Nginx 反代必须 `proxy_buffering off`，否则流式输出会被攒住。
-- **密钥不要写进**：`bot.Secret/Token/AESKey` 不回传给前端，只回传 `has_*` 布尔标志。
+- **密钥不要外传**：客户端飞书机器人的 App Secret 只存在本机配置 / 环境变量中，
+  绝不经网关或 IPC 明文回传（GUI 只展示「已配置」布尔状态）。
 
 ## 测试要求
 

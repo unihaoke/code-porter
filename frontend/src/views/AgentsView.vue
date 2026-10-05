@@ -71,7 +71,8 @@ onMounted(load)
     <div v-if="error" class="alert error">{{ error }}</div>
 
     <div class="card">
-      <table>
+      <div class="table-wrap">
+        <table>
         <thead>
           <tr>
             <th v-if="auth.isAdmin">归属</th>
@@ -125,6 +126,7 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+      </div>
       <p class="muted" style="font-size: 12px; margin-top: 12px">
         共 {{ agents.length }} 个节点，其中 {{ onlineCount }} 个在线。
       </p>

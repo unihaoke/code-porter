@@ -1,0 +1,108 @@
+name: CI
+
+# 主干质量门禁：
+#   push / PR 到 master 时执行
+#     1. backend ：go build + vet + test（附带 MySQL 8 服务容器跑集成测试）
+#     2. web     ：网页控制台 typecheck + 生产构建
+#     3. client  ：Electron 客户端 typecheck + 主进程/渲染层构建（不做安装包，发版走 release-client.yml）
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    services:
+      # 提供给 MySQL 仓储/迁移集成测试；未注入 DSN 时这些测试本来也会自动 skip。
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: codeporter_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      CODEPORTER_TEST_MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/codeporter_test?parseTime=true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: backend/go.sum
+
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+
+      - name: Test
+        working-directory: backend
+        run: go test ./... -count=1 -race
+
+  web-console:
+    name: Web Console (Vue)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  desktop-client:
+    name: Desktop Client (Electron)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.19'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        working-directory: client
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        working-directory: client
+        run: npm run typecheck
+
+      - name: Build main process
+        working-directory: client
+        run: npm run build:main
+
+      - name: Build renderer
+        working-directory: client
+        run: npm run build:renderer

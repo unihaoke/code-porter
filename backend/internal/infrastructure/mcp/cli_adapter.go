@@ -100,6 +100,13 @@ func (a *CLIAdapter) Model() model.Model { return a.model }
 // Close 一次性进程无需常驻清理，空实现。
 func (a *CLIAdapter) Close() error { return nil }
 
+// Warmup CLI 模式没有常驻子进程，「启动」等价于一次可执行性健康探测
+// （LookPath + --version），不发起真实推理、不消耗额度。
+func (a *CLIAdapter) Warmup(ctx context.Context) error { return a.HealthCheck(ctx) }
+
+// Running CLI 模式一次任务一个进程、用完即退，不存在常驻态。
+func (a *CLIAdapter) Running() bool { return false }
+
 // HealthCheck 探测 CLI 是否已安装并可执行。
 //
 // 只做「可执行文件存在性 + 版本号可获取」两项检查，不发起真实推理请求，

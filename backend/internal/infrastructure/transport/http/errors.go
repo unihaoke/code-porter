@@ -4,6 +4,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/codeporter/code-porter/internal/application/gateway"
@@ -42,6 +43,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// decodeBody 读取并解析 JSON 请求体（受 maxBodyBytes 限制）；空 body 不报错。
+func decodeBody(r *http.Request, dst any) error {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
+	if err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	return json.Unmarshal(body, dst)
 }
 
 // writeErr 统一错误响应（OpenAI 风格）；多实例冲突附带可选实例清单。

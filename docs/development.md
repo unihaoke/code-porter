@@ -47,7 +47,7 @@ make run-agent                      # 终端 2：连上网关
 make dev-web                        # 终端 3：http://127.0.0.1:5173（热更新）
 ```
 
-前端开发服务器会把 `/api`、`/v1`、`/webhook`、`/healthz` 代理到 `http://127.0.0.1:9022`，
+前端开发服务器会把 `/api`、`/v1`、`/healthz` 代理到 `http://127.0.0.1:9022`，
 改后端无需重启前端。
 
 ## 目录与分层约定
@@ -115,21 +115,11 @@ TOKEN=$(curl --noproxy '*' -s -X POST http://127.0.0.1:9022/api/auth/login \
 curl --noproxy '*' -X POST http://127.0.0.1:9022/api/keys \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"smoke","scopes":["agent","api"]}'
-
-# 创建一个飞书机器人
-curl --noproxy '*' -X POST http://127.0.0.1:9022/api/bots \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"测试","channel":"feishu","webhook_url":"https://open.feishu.cn/open-apis/bot/v2/hook/demo"}'
-
-# 模拟飞书的 URL 验证
-curl --noproxy '*' -X POST http://127.0.0.1:9022/webhook/feishu/<bot_id> \
-  -H 'Content-Type: application/json' -d '{"type":"url_verification","challenge":"ping"}'
 ```
 
 仓库里另有可直接运行的 Python 冒烟脚本（禁用代理，输出更稳定）：
 
 ```bash
-python backend/.smoke/bot_smoke.py    # 机器人回调链路
 python backend/.smoke/chat_smoke.py   # 网页对话链路（含 SSE）
 ```
 

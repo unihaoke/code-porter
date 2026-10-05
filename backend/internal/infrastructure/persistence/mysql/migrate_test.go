@@ -10,7 +10,7 @@ import (
 	"github.com/codeporter/code-porter/internal/testutil"
 )
 
-// TestMigrateIdempotentAndSeed 验证：迁移幂等、6 张表齐全、种子 admin 存在且默认密码可校验。
+// TestMigrateIdempotentAndSeed 验证：迁移幂等、5 张表齐全、种子 admin 存在且默认密码可校验。
 func TestMigrateIdempotentAndSeed(t *testing.T) {
 	dsn := testutil.RequireMySQL(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -31,7 +31,7 @@ func TestMigrateIdempotentAndSeed(t *testing.T) {
 
 	wantTables := map[string]bool{
 		"users": false, "api_keys": false, "sessions": false,
-		"agents": false, "bots": false, "schema_migrations": false,
+		"agents": false, "schema_migrations": false,
 	}
 	rows, err := pool.QueryContext(ctx, `SELECT table_name FROM information_schema.tables
 		WHERE table_schema = DATABASE()`)

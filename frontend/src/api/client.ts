@@ -1,6 +1,6 @@
 // 管理端 fetch 封装：所有请求自动带会话 Bearer 令牌，401 时清会话并回登录页。
 
-import type { Agent, Bot, ModelInfo, Overview, TaskItem } from '@/types'
+import type { Agent, ModelInfo, Overview, TaskItem } from '@/types'
 
 const TOKEN_KEY = 'codeporter_session'
 const USER_KEY = 'codeporter_user'
@@ -87,16 +87,4 @@ export const api = {
   agents: () => request<{ agents: Agent[] }>('/api/agents'),
   tasks: (query = '') => request<{ tasks: TaskItem[]; total: number }>(`/api/tasks${query ? `?${query}` : ''}`),
   models: () => request<{ models: ModelInfo[] }>('/api/models'),
-
-  // ---- 机器人（路径保持不变，鉴权改为会话） ----
-  bots: () => request<{ bots: Bot[] }>('/api/bots'),
-  createBot: (body: unknown) => request<{ bot: Bot }>('/api/bots', { method: 'POST', body: JSON.stringify(body) }),
-  updateBot: (id: string, body: unknown) =>
-    request<{ bot: Bot }>(`/api/bots/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  toggleBot: (id: string, enabled: boolean) =>
-    request<{ bot: Bot }>(`/api/bots/${id}/toggle`, {
-      method: 'POST',
-      body: JSON.stringify({ enabled }),
-    }),
-  deleteBot: (id: string) => request<{ deleted: boolean }>(`/api/bots/${id}`, { method: 'DELETE' }),
 }

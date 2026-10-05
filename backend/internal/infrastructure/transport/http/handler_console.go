@@ -8,7 +8,6 @@ import (
 	"github.com/codeporter/code-porter/internal/application/gateway"
 	"github.com/codeporter/code-porter/internal/application/port"
 	"github.com/codeporter/code-porter/internal/domain/agent"
-	"github.com/codeporter/code-porter/internal/domain/bot"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/task"
 	"github.com/codeporter/code-porter/internal/domain/user"
@@ -21,7 +20,6 @@ type ConsoleHandlers struct {
 	registry  *gateway.AgentRegistry
 	taskRepo  task.TaskRepository
 	queueRepo QueueStats
-	botRepo   bot.BotRepository
 	users     user.Repository
 	hub       connCounter
 	log       port.Logger
@@ -29,12 +27,11 @@ type ConsoleHandlers struct {
 
 // NewConsoleHandlers 构造处理器。
 func NewConsoleHandlers(registry *gateway.AgentRegistry, taskRepo task.TaskRepository,
-	queueRepo QueueStats, botRepo bot.BotRepository, users user.Repository, hub connCounter, log port.Logger) *ConsoleHandlers {
+	queueRepo QueueStats, users user.Repository, hub connCounter, log port.Logger) *ConsoleHandlers {
 	return &ConsoleHandlers{
 		registry:  registry,
 		taskRepo:  taskRepo,
 		queueRepo: queueRepo,
-		botRepo:   botRepo,
 		users:     users,
 		hub:       hub,
 		log:       log.With(port.F("h", "console")),
@@ -58,14 +55,6 @@ func (h *ConsoleHandlers) visibleAgents(r *http.Request, sc scope) ([]*agent.Age
 		return h.registry.List(r.Context())
 	}
 	return h.registry.ListForOwner(r.Context(), sc.actor.ID())
-}
-
-// visibleBots 按租户返回可见机器人。
-func (h *ConsoleHandlers) visibleBots(r *http.Request, sc scope) ([]*bot.Bot, error) {
-	if sc.isAdmin {
-		return h.botRepo.FindAll(r.Context())
-	}
-	return h.botRepo.FindByOwner(r.Context(), sc.actor.ID())
 }
 
 // usernameMap 批量构造 userID → username（admin 视图用）。
@@ -102,19 +91,12 @@ func (h *ConsoleHandlers) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stats := h.taskStats(tasks, agents)
-	botsCount := 0
-	if h.botRepo != nil {
-		if bots, bErr := h.visibleBots(r, sc); bErr == nil {
-			botsCount = len(bots)
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"agents":        len(agents),
 		"agents_online": stats["agents_online"],
 		"tasks":         stats,
 		"queues":        h.queueSnapshot(agents),
 		"ws_conns":      connCount(h.hub),
-		"bots":          botsCount,
 		"models":        h.modelViews(agents),
 	})
 }

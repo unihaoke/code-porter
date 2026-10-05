@@ -43,13 +43,13 @@ func maskSensitive(s string) string {
 }
 
 // OpenStreamCard 创建流式卡片并返回消息 ID。
-func (r *Runner) OpenStreamCard(ctx context.Context, chatID string, state port.IMCardState) (string, error) {
+func (r *Runner) OpenStreamCard(ctx context.Context, target port.IMReplyTarget, state port.IMCardState) (string, error) {
 	raw, err := json.Marshal(renderStreamCard(state))
 	if err != nil {
 		return "", err
 	}
 	var messageID string
-	if err := r.createMessage(ctx, chatID, larkim.MsgTypeInteractive, string(raw), &messageID); err != nil {
+	if err := r.createMessage(ctx, target.ChatID, larkim.MsgTypeInteractive, string(raw), &messageID); err != nil {
 		return "", err
 	}
 	if messageID == "" {
@@ -189,11 +189,11 @@ func processPanel(content string, active bool) map[string]any {
 // panelHeader 折叠面板头部（标题 + 可旋转箭头图标）。
 func panelHeader(titleMD string) map[string]any {
 	return map[string]any{
-		"title":                map[string]any{"tag": "markdown", "content": titleMD},
-		"vertical_align":       "center",
-		"icon":                 map[string]any{"tag": "standard_icon", "token": "down-small-ccm_outlined", "size": "16px 16px"},
-		"icon_position":        "follow_text",
-		"icon_expanded_angle":  -180,
+		"title":               map[string]any{"tag": "markdown", "content": titleMD},
+		"vertical_align":      "center",
+		"icon":                map[string]any{"tag": "standard_icon", "token": "down-small-ccm_outlined", "size": "16px 16px"},
+		"icon_position":       "follow_text",
+		"icon_expanded_angle": -180,
 	}
 }
 

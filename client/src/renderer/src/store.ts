@@ -30,6 +30,19 @@ declare global {
 
 const api = window.codeporter
 
+/** 机器人渠道名 → 中文展示名（未知渠道原样显示）。 */
+const BOT_LABELS: Record<string, string> = {
+  feishu: '飞书',
+  wecom: '企业微信'
+}
+
+/** startBots/stopBots 不带渠道时使用的聚合忙状态键。 */
+const ALL_BOTS = '__all__'
+
+function botLabel(channel: string): string {
+  return BOT_LABELS[channel] ?? channel
+}
+
 /**
  * 全局状态。用 reactive + 模块级单例，组件直接共享同一份引用，
  * 避免多视图各自维护副本导致状态不一致。
@@ -43,10 +56,13 @@ const state = reactive({
   testing: false,
   testResult: null as CliTestResult | null,
   busy: false,
-  // 机器人服务与代理各自独立开关，忙状态也分开：一边操作时不应禁用另一边的按钮。
-  botBusy: false,
-  botTesting: false,
-  botTestResult: null as BotTestResult | null,
+  // 机器人各渠道（feishu/wecom/…）与代理各自独立开关，忙状态按渠道分开：
+  // 操作一个渠道时不应禁用代理、其他渠道或本地 AI 工具的按钮。
+  botBusy: {} as Record<string, boolean>,
+  botTesting: {} as Record<string, boolean>,
+  botTestResults: {} as Record<string, BotTestResult>,
+  // 本地 AI 工具预热运行时是第三个独立服务，忙状态同样独立。
+  toolsBusy: false,
   ready: false,
   toasts: [] as Toast[]
 })
@@ -125,19 +141,37 @@ function handleEvent(name: string, data: unknown): void {
  * 这里只做防御性兜底。
  */
 function ensureConfigShape(cfg: AgentConfig): AgentConfig {
-  if (!cfg.bots || !cfg.bots.feishu) {
-    cfg.bots = {
-      feishu: {
-        enabled: false,
-        app_id: '',
-        app_secret: '',
-        model: '',
-        mention_only: true,
-        system_prompt: ''
-      }
-    }
+  if (!cfg.bots) {
+    cfg.bots = { feishu: defaultFeishuBot(), wecom: defaultWeComBot() }
+  } else {
+    if (!cfg.bots.feishu) cfg.bots.feishu = defaultFeishuBot()
+    if (!cfg.bots.wecom) cfg.bots.wecom = defaultWeComBot()
   }
   return cfg
+}
+
+/** 飞书机器人节的默认值（旧版 agent.yaml 缺 bots.feishu 时兜底）。 */
+function defaultFeishuBot() {
+  return {
+    enabled: false,
+    app_id: '',
+    app_secret: '',
+    model: '',
+    mention_only: true,
+    system_prompt: ''
+  }
+}
+
+/** 企业微信机器人节的默认值（旧版 agent.yaml 缺 bots.wecom 时兜底）。 */
+function defaultWeComBot() {
+  return {
+    enabled: false,
+    bot_id: '',
+    secret: '',
+    model: '',
+    mention_only: true,
+    system_prompt: ''
+  }
 }
 
 /** 初始化：拉配置 + 订阅事件 + 拉一次状态。 */
@@ -279,13 +313,17 @@ async function stopAgent(): Promise<string | null> {
   }
 }
 
-/** 启动 IM 机器人服务（与代理独立：飞书长连接，消息本地闭环）。 */
-async function startBots(): Promise<string | null> {
-  state.botBusy = true
+/**
+ * 启动 IM 机器人（与代理独立：IM 长连接，消息本地闭环）。
+ * @param channel 指定渠道（feishu/wecom）；留空启动所有已启用渠道。
+ */
+async function startBots(channel?: string): Promise<string | null> {
+  const key = channel ?? ALL_BOTS
+  state.botBusy[key] = true
   try {
-    state.status = await api.startBots()
-    pushLog('info', now(), '机器人服务已启动（飞书长连接）')
-    toast('机器人服务已启动')
+    state.status = await api.startBots(channel)
+    pushLog('info', now(), channel ? `${botLabel(channel)}机器人已启动` : '所有已启用的机器人渠道已启动')
+    toast(channel ? `${botLabel(channel)}机器人已启动` : '机器人服务已启动')
     return null
   } catch (err) {
     const msg = errMessage(err)
@@ -293,17 +331,18 @@ async function startBots(): Promise<string | null> {
     toast(`机器人启动失败：${msg}`, 'error')
     return msg
   } finally {
-    state.botBusy = false
+    state.botBusy[key] = false
   }
 }
 
-/** 停止 IM 机器人服务。成功返回 null，失败返回错误信息。 */
-async function stopBots(): Promise<string | null> {
-  state.botBusy = true
+/** 停止 IM 机器人。channel 留空时停止全部渠道。成功返回 null，失败返回错误信息。 */
+async function stopBots(channel?: string): Promise<string | null> {
+  const key = channel ?? ALL_BOTS
+  state.botBusy[key] = true
   try {
-    state.status = await api.stopBots()
-    pushLog('info', now(), '机器人服务已停止')
-    toast('机器人服务已停止')
+    state.status = await api.stopBots(channel)
+    pushLog('info', now(), channel ? `${botLabel(channel)}机器人已停止` : '所有机器人渠道已停止')
+    toast(channel ? `${botLabel(channel)}机器人已停止` : '机器人服务已停止')
     return null
   } catch (err) {
     const msg = errMessage(err)
@@ -311,12 +350,70 @@ async function stopBots(): Promise<string | null> {
     toast(`机器人停止失败：${msg}`, 'error')
     return msg
   } finally {
-    state.botBusy = false
+    state.botBusy[key] = false
   }
 }
 
 /**
- * 保存配置并重启正在运行的本地服务（代理 / 机器人）。
+ * 启动（预热）本地 AI 工具：只拉起配置中已启用的工具，与代理 / 机器人独立。
+ * 开机不会自动启动，仅由界面按钮触发。
+ * @returns 成功（含部分工具失败）返回 null；整体启动失败返回错误信息。
+ */
+async function startTools(): Promise<string | null> {
+  state.toolsBusy = true
+  try {
+    const r = await api.startTools()
+    state.status = r.status
+    // 预热结果是最新的可用性信息，按工具合并进健康状态。
+    const healthByModel = new Map(state.health.map((h) => [h.model, h]))
+    for (const it of r.results) {
+      healthByModel.set(it.model, { model: it.model, available: it.ok, detail: it.detail })
+    }
+    state.health = [...healthByModel.values()]
+    const okCount = r.results.filter((x) => x.ok).length
+    const failCount = r.results.length - okCount
+    for (const it of r.results) {
+      pushLog(it.ok ? 'info' : 'warn', now(), `工具 ${it.label}（${it.mode}）：${it.detail}`)
+    }
+    if (failCount > 0) {
+      const msg = `本地 AI 工具已启动：${okCount} 个就绪，${failCount} 个失败（详见日志）`
+      pushLog('warn', now(), msg)
+      toast(msg)
+    } else {
+      pushLog('info', now(), `本地 AI 工具已启动（${okCount} 个就绪）`)
+      toast(`本地 AI 工具已启动（${okCount} 个就绪）`)
+    }
+    return null
+  } catch (err) {
+    const msg = errMessage(err)
+    pushLog('error', now(), `本地 AI 工具启动失败：${msg}`)
+    toast(`本地 AI 工具启动失败：${msg}`, 'error')
+    return msg
+  } finally {
+    state.toolsBusy = false
+  }
+}
+
+/** 停止本地 AI 工具预热运行时。成功返回 null，失败返回错误信息。 */
+async function stopTools(): Promise<string | null> {
+  state.toolsBusy = true
+  try {
+    state.status = await api.stopTools()
+    pushLog('info', now(), '本地 AI 工具已停止')
+    toast('本地 AI 工具已停止')
+    return null
+  } catch (err) {
+    const msg = errMessage(err)
+    pushLog('error', now(), `本地 AI 工具停止失败：${msg}`)
+    toast(`本地 AI 工具停止失败：${msg}`, 'error')
+    return msg
+  } finally {
+    state.toolsBusy = false
+  }
+}
+
+/**
+ * 保存配置并重启正在运行的本地服务（代理 / 机器人 / 本地 AI 工具）。
  *
  * 为什么必须重启：本地 AI 配置（工作目录、CLI 命令、工具开关、密钥等）在服务
  * Start 时就被固化进各自的 MCP 注册表，config.save 只更新核心内存配置，
@@ -327,17 +424,24 @@ async function stopBots(): Promise<string | null> {
 async function saveAndRestartLocalAI(): Promise<string | null> {
   if (!state.config) return '配置尚未加载完成'
   const agentWasRunning = !!state.status?.running
-  const botWasRunning = !!state.status?.bots?.feishu?.running
+  // 机器人按渠道独立运行：记录当前在跑的渠道集合，稍后只重启这些渠道，
+  // 未运行的渠道（含刚在界面上勾选启用但没启动的）不擅自拉起。
+  const runningBotChannels = Object.entries(state.status?.bots ?? {})
+    .filter(([, st]) => st.running)
+    .map(([ch]) => ch)
+  const botWasRunning = runningBotChannels.length > 0
+  const toolsWereRunning = !!state.status?.tools_running
 
   state.busy = true
-  state.botBusy = true
+  for (const ch of runningBotChannels) state.botBusy[ch] = true
+  state.toolsBusy = true
   try {
     // 1) 先落盘（必须传纯数据，原因同 saveConfig）。
     await api.saveConfig(toPlain(state.config))
     pushLog('info', now(), '配置已保存')
 
     // 2) 没有运行中的服务：下次启动自然用新配置，无需重启。
-    if (!agentWasRunning && !botWasRunning) {
+    if (!agentWasRunning && !botWasRunning && !toolsWereRunning) {
       pushLog('info', now(), '当前没有运行中的服务，新配置将在下次启动时生效')
       toast('配置已保存；当前无运行中的服务，下次启动即生效')
       try {
@@ -356,11 +460,17 @@ async function saveAndRestartLocalAI(): Promise<string | null> {
       state.status = await api.start()
       restarted.push('代理')
     }
-    if (botWasRunning) {
-      pushLog('info', now(), '正在重启机器人服务以应用本地 AI 配置…')
-      await api.stopBots()
-      state.status = await api.startBots()
-      restarted.push('机器人')
+    for (const ch of runningBotChannels) {
+      pushLog('info', now(), `正在重启${botLabel(ch)}机器人以应用本地 AI 配置…`)
+      await api.stopBots(ch)
+      state.status = await api.startBots(ch)
+      restarted.push(`${botLabel(ch)}机器人`)
+    }
+    if (toolsWereRunning) {
+      pushLog('info', now(), '正在重启本地 AI 工具以应用配置…')
+      await api.stopTools()
+      state.status = (await api.startTools()).status
+      restarted.push('本地 AI 工具')
     }
     const msg = `配置已保存，${restarted.join('、')}已按新配置重启`
     pushLog('info', now(), msg)
@@ -379,7 +489,8 @@ async function saveAndRestartLocalAI(): Promise<string | null> {
     return msg
   } finally {
     state.busy = false
-    state.botBusy = false
+    for (const ch of runningBotChannels) state.botBusy[ch] = false
+    state.toolsBusy = false
   }
 }
 
@@ -388,13 +499,13 @@ async function saveAndRestartLocalAI(): Promise<string | null> {
  * 注意：校验的是核心内存中「上次保存」的配置，界面改完未保存不会被带上。
  */
 async function testBot(channel = 'feishu'): Promise<BotTestResult | null> {
-  state.botTesting = true
-  state.botTestResult = null
-  pushLog('info', now(), `开始测试${channel === 'feishu' ? '飞书' : channel}机器人凭证…`)
+  state.botTesting[channel] = true
+  delete state.botTestResults[channel]
+  pushLog('info', now(), `开始测试${botLabel(channel)}机器人凭证…`)
   try {
     const r = await api.testBot(channel)
-    state.botTestResult = r
-    pushLog(r.ok ? 'info' : 'warn', now(), `机器人连接测试：${r.detail}`)
+    state.botTestResults[channel] = r
+    pushLog(r.ok ? 'info' : 'warn', now(), `${botLabel(channel)}机器人连接测试：${r.detail}`)
     if (r.ok && r.tenant_key) {
       pushLog('info', now(), `凭证有效：租户 ${r.tenant_key}，token 有效期 ${r.expire_seconds ?? 0} 秒`)
     }
@@ -402,11 +513,11 @@ async function testBot(channel = 'feishu'): Promise<BotTestResult | null> {
   } catch (err) {
     // 核心在凭证无效时以 IPC 错误返回 detail，这里保留一份失败结果供界面就地展示。
     const msg = errMessage(err)
-    state.botTestResult = { channel, ok: false, detail: msg }
-    pushLog('error', now(), `机器人连接测试失败：${msg}`)
+    state.botTestResults[channel] = { channel, ok: false, detail: msg }
+    pushLog('error', now(), `${botLabel(channel)}机器人连接测试失败：${msg}`)
     return null
   } finally {
-    state.botTesting = false
+    state.botTesting[channel] = false
   }
 }
 
@@ -478,6 +589,8 @@ export function useStore() {
     stopAgent,
     startBots,
     stopBots,
+    startTools,
+    stopTools,
     testBot,
     testCli,
     pickWorkDir,

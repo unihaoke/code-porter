@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { authApi } from '@/api/account'
@@ -13,7 +13,6 @@ const navs = computed(() => {
     { to: '/', label: '概览', icon: '◧', admin: false },
     { to: '/chat', label: '对话', icon: '◑', admin: false },
     { to: '/keys', label: '秘钥', icon: '⚿', admin: false },
-    { to: '/bots', label: '机器人', icon: '◍', admin: false },
     { to: '/agents', label: '本地节点', icon: '◈', admin: false },
     { to: '/tasks', label: '任务', icon: '◇', admin: false },
     { to: '/users', label: '用户管理', icon: '♛', admin: true },
@@ -22,6 +21,17 @@ const navs = computed(() => {
 })
 
 const current = computed(() => route.path)
+
+// ---------- 移动端抽屉侧栏 ----------
+const drawerOpen = ref(false)
+
+// 路由变化（点击导航、返回）时自动收起抽屉
+watch(
+  () => route.fullPath,
+  () => {
+    drawerOpen.value = false
+  },
+)
 
 async function logout() {
   menuOpen.value = false
@@ -103,7 +113,23 @@ async function submitPwd() {
 
 <template>
   <div class="shell">
-    <aside class="side">
+    <!-- 移动端顶栏（桌面端隐藏） -->
+    <header class="topbar">
+      <button class="hamburger" type="button" aria-label="打开菜单" @click="drawerOpen = true">
+        <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true">
+          <path d="M3 5h14M3 10h14M3 15h14" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" />
+        </svg>
+      </button>
+      <div class="topbar-brand">
+        <span class="logo">CP</span>
+        <strong>CodePorter</strong>
+      </div>
+    </header>
+
+    <div v-if="drawerOpen" class="drawer-mask" @click="drawerOpen = false" />
+
+    <aside class="side" :class="{ open: drawerOpen }">
       <div class="brand">
         <span class="logo">CP</span>
         <div>
@@ -475,5 +501,89 @@ nav {
 .main {
   flex: 1;
   min-width: 0;
+}
+
+/* ---------- 移动端：顶栏 + 抽屉侧栏 ---------- */
+.topbar,
+.hamburger,
+.drawer-mask {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .shell {
+    display: block;
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 52px;
+    padding: 0 12px;
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .hamburger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .hamburger:active {
+    background: #f4f6f9;
+  }
+
+  .topbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 15px;
+  }
+
+  .topbar-brand .logo {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    font-size: 11px;
+  }
+
+  .drawer-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.4);
+    z-index: 55;
+    animation: menu-in 0.15s ease-out;
+  }
+
+  .side {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 264px;
+    max-width: 84vw;
+    height: 100dvh;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 0 0 32px rgba(16, 24, 40, 0.18);
+  }
+
+  .side.open {
+    transform: none;
+  }
 }
 </style>

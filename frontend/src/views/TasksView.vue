@@ -65,7 +65,8 @@ onMounted(load)
     <div v-if="error" class="alert error">{{ error }}</div>
 
     <div class="card">
-      <table>
+      <div class="table-wrap">
+        <table>
         <thead>
           <tr>
             <th>任务 ID</th>
@@ -97,6 +98,7 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 </template>

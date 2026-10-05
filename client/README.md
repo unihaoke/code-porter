@@ -158,8 +158,15 @@ npm start                   # 构建界面并启动 Electron
 ```
 
 动作：`config.get` / `config.save` / `agent.start` / `agent.stop` / `agent.status` /
-`cli.test` / `app.quit`
+`cli.test` / `bot.start` / `bot.stop` / `bot.status` / `bot.test` /
+`tools.start` / `tools.stop` / `app.quit`
 事件：`log` / `status` / `health` / `task` / `ready`
+
+`bot.*` 动作的 params 可选 `{"channel":"feishu" | "wecom"}`：
+`bot.start` / `bot.stop` 带渠道时只启停该渠道，不带时作用于全部已启用渠道；
+`bot.test` 始终针对单个渠道（不带默认 `feishu`）。`status.bots` 是按渠道名键入的对象，
+每个渠道统一回传 `running / enabled / configured / credential_id / model / mention_only`
+（飞书另有 `app_id`、企业微信另有 `bot_id`，绝不回传 secret）。
 
 **两条重要约束**（改代码时务必遵守）：
 
@@ -184,12 +191,18 @@ AI CLI（Claude Code / Codex…）在**工作目录**里读写文件、执行命
 可在「配置 → 本地 AI → 工作目录」点「浏览…」选择，会写回 `mcp.work_dir`；
 留空则使用客户端 exe 所在目录。
 
-## 飞书机器人
+## IM 机器人（飞书 / 企业微信）
 
-在「配置 → 飞书机器人」里启用并填入企业自建应用的 **App ID / App Secret** 即可，
-配置写回 `agent.yaml` 的 `bots.feishu` 节。机器人运行在 Go 核心内，
-通过飞书官方长连接（WebSocket 出站）收发消息，**不需要公网域名、回调地址或加密配置**；
-修改配置后需重启代理生效。平台侧前置条件与排错见根目录 `docs/bot-setup.md`。
+在「配置」页分别有「飞书机器人」和「企业微信机器人」两张卡片，独立启用并填入凭证：
+飞书用企业自建应用的 **App ID / App Secret**（`bots.feishu` 节），企业微信用智能机器人
+API 模式的 **Bot ID / Secret**（`bots.wecom` 节）。机器人运行在 Go 核心内，
+通过出站 WebSocket 长连接收发消息，**不需要公网域名、回调地址或加密配置**；
+两个渠道与代理三者互不依赖，可在「概览」页的「IM 机器人」卡按渠道分别启停。
+配置在服务启动时固化进各自的 MCP 注册表，保存后需在概览页重启对应渠道
+（或用设置页的「保存并重启本地 AI」，只重启原本就在运行的渠道）才会生效。
+飞书回复为单张流式卡片（打字机 + 折叠过程面板），企业微信回复为流式 Markdown 消息
+（灰色引用区展示过程，正文生成后折叠为摘要）。
+平台侧前置条件与排错见根目录 `docs/bot-setup.md`。
 
 ## 环境变量（调试用）
 

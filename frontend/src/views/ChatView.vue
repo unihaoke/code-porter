@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { streamChat } from '@/api/chat'
 import type { Agent, ChatMessage, ModelInfo } from '@/types'
@@ -21,6 +21,77 @@ const selectedAgent = ref('')
 const error = ref('')
 
 let controller: AbortController | null = null
+
+// 打字机（仅直连模式）：SSE 片段往往成批突发到达，直接 append 会「跳变」。
+// 这里把收到的片段按码位排队，用固定节拍逐字吐出，节奏与飞书卡片的流式打字感一致；
+// 积压过大时自动加速，保证长回复不会滞后太久。
+const TYPE_TICK_MS = 24 // 约 42fps
+const TYPE_STEP = 2 // 每拍基础吐出码位数
+const TYPE_CATCH_UP = 40 // 积压超过一拍量后，按 1/N 追赶
+let typeTimer: number | null = null
+let typeQueue: string[] = []
+let typePos = 0
+let typeIndex = -1
+let typeFinishing = false
+let typeFinal = ''
+
+function startTyper(index: number) {
+  stopTyper()
+  typeQueue = []
+  typePos = 0
+  typeIndex = index
+  typeFinishing = false
+  typeFinal = ''
+  typeTimer = window.setInterval(typeTick, TYPE_TICK_MS)
+}
+
+function stopTyper() {
+  if (typeTimer !== null) {
+    window.clearInterval(typeTimer)
+    typeTimer = null
+  }
+  typeIndex = -1
+  typeQueue = []
+  typePos = 0
+  typeFinishing = false
+  typeFinal = ''
+}
+
+// flushTyper 把尚未吐出的文字一次性落盘（停止/出错/清屏时用）。
+function flushTyper() {
+  if (typeIndex < 0) return
+  const rest = typeQueue.slice(typePos).join('')
+  if (rest && messages.value[typeIndex]) {
+    messages.value[typeIndex].content += rest
+  }
+  stopTyper()
+}
+
+function typeTick() {
+  const m = messages.value[typeIndex]
+  if (!m) {
+    stopTyper()
+    return
+  }
+  const backlog = typeQueue.length - typePos
+  if (backlog > 0) {
+    // 积压越大吐出越快：常态匀速打字，突发大批片段时快速追赶。
+    const step = backlog > TYPE_STEP ? Math.max(TYPE_STEP, Math.ceil(backlog / TYPE_CATCH_UP)) : TYPE_STEP
+    const take = Math.min(step, backlog)
+    m.content += typeQueue.slice(typePos, typePos + take).join('')
+    typePos += take
+    scrollToBottom()
+  }
+  if (typeQueue.length - typePos === 0 && typeFinishing) {
+    // 流已结束且全部文字吐完：用 done 的完整结果收口（防御片段拼接偏差）。
+    if (typeFinal) m.content = typeFinal
+    m.pending = false
+    streaming.value = false
+    status.value = ''
+    stopTyper()
+    scrollToBottom()
+  }
+}
 
 const onlineAgents = computed(() => agents.value.filter((a) => a.status !== 'offline'))
 const canSend = computed(
@@ -61,6 +132,9 @@ function send() {
   const draft: Bubble = { role: 'assistant', content: '', pending: true }
   messages.value.push(draft)
   const index = messages.value.length - 1
+  // 直连模式走打字机；队列模式维持片段到达即渲染。
+  const useTyper = mode.value === 'direct'
+  if (useTyper) startTyper(index)
 
   // 历史只携带已完成的消息，避免把空草稿发给模型。
   const history: ChatMessage[] = messages.value
@@ -84,17 +158,34 @@ function send() {
         status.value = `任务 ${meta.task_id} · ${meta.mode === 'direct' ? '直连' : '队列'}模式`
       },
       onChunk: (delta) => {
-        messages.value[index].content += delta
-        scrollToBottom()
+        if (!delta) return
+        if (useTyper && typeIndex === index) {
+          // 按码位入队，避免切开 emoji 等代理对。
+          typeQueue.push(...Array.from(delta))
+        } else {
+          messages.value[index].content += delta
+          scrollToBottom()
+        }
       },
       onDone: (full) => {
-        if (full) messages.value[index].content = full
-        messages.value[index].pending = false
-        streaming.value = false
-        status.value = ''
-        scrollToBottom()
+        if (useTyper && typeIndex === index) {
+          // 等打字机把队列吐完再收口，避免最终全文瞬间覆盖掉打字动画。
+          typeFinishing = true
+          typeFinal = full
+          typeTick()
+        } else {
+          if (full) messages.value[index].content = full
+          messages.value[index].pending = false
+          streaming.value = false
+          status.value = ''
+          scrollToBottom()
+        }
       },
       onError: (message) => {
+        if (useTyper && typeIndex === index) {
+          // 出错时把已到达但未展示的文字立即落盘，再挂错误提示。
+          flushTyper()
+        }
         messages.value[index].error = message
         messages.value[index].pending = false
         messages.value[index].content = messages.value[index].content || message
@@ -113,11 +204,19 @@ function send() {
 function stop() {
   controller?.abort()
   controller = null
+  // 已收到的片段全部展示出来，不再保留动画。
+  flushTyper()
   streaming.value = false
   status.value = '已停止'
+  const last = [...messages.value].reverse().find((m) => m.role === 'assistant')
+  if (last) last.pending = false
 }
 
 function clearChat() {
+  flushTyper()
+  controller?.abort()
+  controller = null
+  streaming.value = false
   messages.value = []
   status.value = ''
 }
@@ -139,6 +238,11 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => {
   loadModels()
   loadAgents()
+})
+
+onUnmounted(() => {
+  stopTyper()
+  controller?.abort()
 })
 </script>
 
@@ -302,5 +406,36 @@ onMounted(() => {
 .composer {
   border-top: 1px solid var(--border);
   padding: 14px 20px;
+}
+
+/* ---------- 移动端适配 ---------- */
+@media (max-width: 860px) {
+  /* 工具栏下拉在窄屏改为流式换行（覆盖行内固定宽度） */
+  .page-head .row {
+    flex-wrap: wrap;
+  }
+
+  .page-head .row select {
+    flex: 1 1 140px;
+    width: auto !important;
+  }
+
+  .chat {
+    height: calc(100dvh - 250px);
+    min-height: 320px;
+  }
+
+  .scroll {
+    padding: 14px 12px;
+  }
+
+  .bubble {
+    max-width: 88%;
+  }
+
+  .composer {
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
 }
 </style>

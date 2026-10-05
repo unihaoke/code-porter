@@ -68,9 +68,8 @@ func applyGatewayEnv(cfg *GatewayConfig, configPath string) {
 	}
 
 	setIfNonEmpty("GATEWAY_ADDR", &cfg.Server.Addr)
-	setIfNonEmpty("GATEWAY_PUBLIC_ADDR", &cfg.Server.PublicAddr)
 
-	setIfNonEmpty("BOT_DEFAULT_MODEL", &cfg.Bot.DefaultModel)
+	setIfNonEmpty("CHAT_DEFAULT_MODEL", &cfg.Chat.DefaultModel)
 	setIfNonEmpty("LOG_LEVEL", &cfg.Log.Level)
 }
 
@@ -113,6 +112,13 @@ func applyAgentEnv(cfg *AgentConfig, configPath string) {
 	set("FEISHU_BOT_MODEL", &cfg.Bots.Feishu.Model)
 	setBool("FEISHU_BOT_ENABLED", &cfg.Bots.Feishu.Enabled)
 	setBool("FEISHU_BOT_MENTION_ONLY", &cfg.Bots.Feishu.MentionOnly)
+
+	// 本地企业微信机器人（智能机器人 API 模式）。
+	set("WECOM_BOT_ID", &cfg.Bots.WeCom.BotID)
+	set("WECOM_BOT_SECRET", &cfg.Bots.WeCom.Secret)
+	set("WECOM_BOT_MODEL", &cfg.Bots.WeCom.Model)
+	setBool("WECOM_BOT_ENABLED", &cfg.Bots.WeCom.Enabled)
+	setBool("WECOM_BOT_MENTION_ONLY", &cfg.Bots.WeCom.MentionOnly)
 
 	set("LOG_LEVEL", &cfg.Log.Level)
 }

@@ -39,7 +39,7 @@ onMounted(load)
     <div class="page-head">
       <div>
         <h2>概览</h2>
-        <p>网关、本地节点与机器人的实时状态。</p>
+        <p>网关与本地节点的实时状态。</p>
       </div>
       <button class="btn" @click="load">刷新</button>
     </div>
@@ -56,11 +56,6 @@ onMounted(load)
         <div class="label">长连接</div>
         <div class="value">{{ data.ws_conns }}</div>
         <div class="muted">直连模式可用连接</div>
-      </div>
-      <div class="card stat">
-        <div class="label">机器人</div>
-        <div class="value">{{ data.bots_enabled }} / {{ data.bots }}</div>
-        <div class="muted">启用 / 总数</div>
       </div>
       <div class="card stat">
         <div class="label">任务（全部）</div>

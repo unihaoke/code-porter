@@ -11,6 +11,8 @@ const title = computed(() => props.tool.label || props.tool.model)
 /** 健康状态 → 展示用的标签样式与文案。 */
 const badge = computed(() => {
   if (!props.tool.enabled) return { cls: 'tag--muted', text: '未启用' }
+  // 常驻 MCP 子进程已被手动拉起并握手成功，优先展示运行态。
+  if (props.tool.running) return { cls: 'tag--ok', text: '运行中' }
   const h = props.health
   if (!h) return { cls: 'tag--muted', text: '检测中' }
   if (h.available) return { cls: 'tag--ok', text: '可用' }

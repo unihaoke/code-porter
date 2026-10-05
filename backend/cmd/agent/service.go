@@ -15,10 +15,11 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/infrastructure/client"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
-	"github.com/codeporter/code-porter/internal/infrastructure/feishubot"
+	"github.com/codeporter/code-porter/internal/infrastructure/imbot"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
 	"github.com/codeporter/code-porter/internal/infrastructure/mcp"
 	"github.com/codeporter/code-porter/internal/infrastructure/system"
+	"github.com/codeporter/code-porter/pkg/lockfile"
 	"github.com/codeporter/code-porter/pkg/pool"
 )
 
@@ -41,14 +42,19 @@ type Service struct {
 	mcpReg  *mcp.Registry
 	wg      sync.WaitGroup
 
-	// ---- 机器人运行时（IM 长连接） ----
-	botMu      sync.Mutex
-	botRunning bool
-	botCancel  context.CancelFunc
-	botPool    *pool.Pool
-	botReg     *mcp.Registry
-	botWg      sync.WaitGroup
-	botLock    *feishubot.FileLock
+	// ---- 机器人运行时（IM 长连接，按渠道独立） ----
+	// 每个渠道（feishu/wecom/…）有独立的连接、协程池、MCP 注册表与单实例锁，
+	// 可分别启停；bots 以渠道名为键。
+	botsMu sync.Mutex
+	bots   map[string]*botRuntime
+
+	// ---- 本地 AI 工具运行时（手动预热） ----
+	//
+	// 与代理 / 机器人都独立：只负责把配置中已启用的 MCP 子进程提前拉起，
+	// 不连网关、不连 IM。客户端启动时不会自动创建，仅由界面按钮显式启停。
+	toolsMu      sync.Mutex
+	toolsRunning bool
+	toolsReg     *mcp.Registry
 
 	// onEvent 运行时事件回调（可选），供 IPC 层转发给界面。
 	onEvent func(kind string, data any)
@@ -76,7 +82,7 @@ func (s *Service) emitEvent(kind string, data any) {
 
 // NewService 构造服务实例。cfg 为已加载配置；log 接收运行日志（GUI 可替换为自定义 writer）。
 func NewService(cfgPath string, cfg *config.AgentConfig, log *logging.Logger) *Service {
-	return &Service{cfgPath: cfgPath, cfg: cfg, log: log}
+	return &Service{cfgPath: cfgPath, cfg: cfg, log: log, bots: make(map[string]*botRuntime)}
 }
 
 // Running 报告代理是否正在运行。
@@ -91,9 +97,17 @@ func (s *Service) Status() map[string]any {
 	s.mu.Lock()
 	running := s.running
 	s.mu.Unlock()
+	s.toolsMu.Lock()
+	toolsRunning := s.toolsRunning
+	toolsReg := s.toolsReg
+	s.toolsMu.Unlock()
+	var warmed map[model.Model]bool
+	if toolsRunning && toolsReg != nil {
+		warmed = toolsReg.RunningModels()
+	}
 	cfg := s.cfg
 	if cfg == nil {
-		return map[string]any{"running": false, "bots": map[string]any{}}
+		return map[string]any{"running": false, "tools_running": false, "bots": map[string]any{}}
 	}
 	aiTools := make([]map[string]any, 0, len(model.All()))
 	for _, m := range model.All() {
@@ -108,6 +122,7 @@ func (s *Service) Status() map[string]any {
 			"enabled": acfg.Enabled,
 			"mode":    string(acfg.Mode),
 			"command": acfg.Command,
+			"running": warmed[m],
 		})
 	}
 	workDir := strings.TrimSpace(cfg.MCP.WorkDir)
@@ -128,26 +143,46 @@ func (s *Service) Status() map[string]any {
 		"work_dir":        workDir,
 		"config_path":     s.cfgPath,
 		"ai_tools":        aiTools,
+		"tools_running":   toolsRunning,
 		"bots":            s.botsStatus(cfg),
 	}
 }
 
-// botsStatus 汇总各 IM 机器人的配置与运行状态（未运行也可展示配置态）。
+// botsStatus 汇总各 IM 渠道的配置与运行状态（未运行也可展示配置态）。
+// 注意：绝不回传 secret，只回传是否已配置与脱敏的身份标识。
 func (s *Service) botsStatus(cfg *config.AgentConfig) map[string]any {
-	s.botMu.Lock()
-	running := s.botRunning
-	s.botMu.Unlock()
-	fc := cfg.Bots.Feishu
-	return map[string]any{
-		"feishu": map[string]any{
-			"running":    running,
-			"enabled":    fc.Enabled,
-			"configured": strings.TrimSpace(fc.AppID) != "" && strings.TrimSpace(fc.AppSecret) != "",
-			"app_id":     fc.AppID,
-			"model":        ifEmpty(fc.Model, string(model.ClaudeCode)),
-			"mention_only": fc.MentionOnly,
-		},
+	s.botsMu.Lock()
+	runtimes := make(map[string]*botRuntime, len(s.bots))
+	for k, v := range s.bots {
+		runtimes[k] = v
 	}
+	s.botsMu.Unlock()
+
+	out := make(map[string]any, len(imbot.Channels()))
+	for _, ch := range imbot.Channels() {
+		out[ch] = botStatusItem(cfg, ch, runtimes[ch])
+	}
+	return out
+}
+
+func botStatusItem(cfg *config.AgentConfig, channel string, rt *botRuntime) map[string]any {
+	bc := channelBotConfig(cfg, channel)
+	item := map[string]any{
+		"running":       rt != nil,
+		"enabled":       bc.enabled,
+		"configured":    strings.TrimSpace(bc.credID) != "" && strings.TrimSpace(bc.credSecret) != "",
+		"credential_id": bc.credID, // 统一键
+		"model":         ifEmpty(bc.model, string(model.ClaudeCode)),
+		"mention_only":  bc.mentionOnly,
+	}
+	// 渠道历史键（前端兼容/展示），不含任何 secret。
+	switch channel {
+	case imbot.ChannelFeishu:
+		item["app_id"] = bc.credID
+	case imbot.ChannelWeCom:
+		item["bot_id"] = bc.credID
+	}
+	return item
 }
 
 func ifEmpty(v, fallback string) string {
@@ -288,169 +323,426 @@ func (s *Service) Start() error {
 	return nil
 }
 
-// ---- 机器人运行时（与代理独立） ----
+// ---- 机器人运行时（与代理独立，按渠道独立启停） ----
 
-// BotsRunning 机器人服务是否运行中。
-func (s *Service) BotsRunning() bool {
-	s.botMu.Lock()
-	defer s.botMu.Unlock()
-	return s.botRunning
+// botRuntime 单个 IM 渠道的运行时资源：渠道之间互不共享池/注册表/锁。
+type botRuntime struct {
+	channel string
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	pool    *pool.Pool
+	reg     *mcp.Registry
+	lock    *lockfile.Lock
+	runner  port.IMBotRunner
+	svc     *agentapp.IMBotService
 }
 
-// StartBots 启动已配置的 IM 机器人（目前仅飞书）。
+// channelSettings 某渠道配置的平台无关投影。
+type channelSettings struct {
+	enabled      bool
+	credID       string
+	credSecret   string
+	model        string
+	mentionOnly  bool
+	systemPrompt string
+}
+
+func channelBotConfig(cfg *config.AgentConfig, channel string) channelSettings {
+	switch channel {
+	case imbot.ChannelFeishu:
+		fc := cfg.Bots.Feishu
+		return channelSettings{
+			enabled: fc.Enabled, credID: fc.AppID, credSecret: fc.AppSecret,
+			model: fc.Model, mentionOnly: fc.MentionOnly, systemPrompt: fc.SystemPrompt,
+		}
+	case imbot.ChannelWeCom:
+		wc := cfg.Bots.WeCom
+		return channelSettings{
+			enabled: wc.Enabled, credID: wc.BotID, credSecret: wc.Secret,
+			model: wc.Model, mentionOnly: wc.MentionOnly, systemPrompt: wc.SystemPrompt,
+		}
+	default:
+		return channelSettings{}
+	}
+}
+
+// BotsRunning 是否有任意渠道机器人在运行。
+func (s *Service) BotsRunning() bool {
+	s.botsMu.Lock()
+	defer s.botsMu.Unlock()
+	return len(s.bots) > 0
+}
+
+// BotChannelRunning 指定渠道是否在运行。
+func (s *Service) BotChannelRunning(channel string) bool {
+	s.botsMu.Lock()
+	defer s.botsMu.Unlock()
+	_, ok := s.bots[channel]
+	return ok
+}
+
+// botLockDir 返回单实例锁文件目录（配置文件所在目录，兜底工作目录）。
+func (s *Service) botLockDir() string {
+	if strings.TrimSpace(s.cfgPath) != "" {
+		return filepath.Dir(s.cfgPath)
+	}
+	return defaultClientWorkDir()
+}
+
+// StartEnabledBots 启动配置中所有 enabled 渠道；单个渠道失败只告警，不影响其他渠道。
+// 供无界面启动（main）使用；GUI 按渠道调用 StartBot。
+func (s *Service) StartEnabledBots() {
+	for _, channel := range imbot.Channels() {
+		settings := channelBotConfig(s.cfg, channel)
+		if !settings.enabled {
+			continue
+		}
+		if err := s.StartBot(channel); err != nil {
+			s.log.Warn("im bot not started",
+				port.F("channel", channel), port.F("err", err.Error()))
+		}
+	}
+}
+
+// ChannelStartResult 聚合启动时单个渠道的结果（逐渠道回执失败原因）。
+type ChannelStartResult struct {
+	Channel string `json:"channel"`
+	OK      bool   `json:"ok"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// StartBots 启动全部已启用渠道；逐渠道返回结果，单个渠道失败不阻断其他渠道。
+//   - 没有任何渠道启用：返回错误；
+//   - 全部失败：返回错误（含每个渠道的原因）；
+//   - 部分失败：结果与错误同时返回，调用方应认为成功渠道已在运行；
+//   - 全部成功：错误为 nil。
+func (s *Service) StartBots() ([]ChannelStartResult, error) {
+	var results []ChannelStartResult
+	var failed []string
+	enabled := 0
+	for _, channel := range imbot.Channels() {
+		if !channelBotConfig(s.cfg, channel).enabled {
+			continue
+		}
+		enabled++
+		// 已在运行视为成功（聚合入口可能被重复调用）。
+		if s.BotChannelRunning(channel) {
+			results = append(results, ChannelStartResult{Channel: channel, OK: true})
+			continue
+		}
+		if err := s.StartBot(channel); err != nil {
+			results = append(results, ChannelStartResult{Channel: channel, OK: false, Detail: err.Error()})
+			failed = append(failed, channel+": "+err.Error())
+			continue
+		}
+		results = append(results, ChannelStartResult{Channel: channel, OK: true})
+	}
+	if enabled == 0 {
+		return nil, errors.New("未启用任何 IM 机器人：请先在配置中开启 bots.feishu.enabled 或 bots.wecom.enabled 并保存")
+	}
+	if len(failed) > 0 {
+		msg := strings.Join(failed, "；")
+		if len(failed) == enabled {
+			return results, errors.New(msg)
+		}
+		return results, errors.New("部分渠道启动失败（其余渠道已正常运行）：" + msg)
+	}
+	return results, nil
+}
+
+// StartBot 启动指定渠道的机器人。
 //
-// 不依赖网关连接：机器人有独立的 MCP 注册表与协程池，消息本地闭环。
-// 同一台机器上同一 App ID 只允许一个实例（文件锁），避免重复消费事件。
-func (s *Service) StartBots() error {
-	s.botMu.Lock()
-	if s.botRunning {
-		s.botMu.Unlock()
-		return errors.New("机器人已在运行")
+// 不依赖网关连接：每个渠道有独立的 MCP 注册表与协程池，消息本地闭环。
+// 同一台机器上同一渠道同一身份只允许一个实例（pkg/lockfile 心跳锁），
+// 不同渠道/不同身份互不阻塞。
+func (s *Service) StartBot(channel string) error {
+	if !imbot.IsSupported(channel) {
+		return fmt.Errorf("未知 IM 渠道: %q（支持: %v）", channel, imbot.Channels())
 	}
-	s.botMu.Unlock()
-
-	fc := s.cfg.Bots.Feishu
-	if !fc.Enabled {
-		return errors.New("机器人未启用：请先在配置中开启 bots.feishu.enabled 并保存")
+	settings := channelBotConfig(s.cfg, channel)
+	if !settings.enabled {
+		return fmt.Errorf("%s 机器人未启用：请先在配置中开启 bots.%s.enabled 并保存", channel, channel)
 	}
-	if strings.TrimSpace(fc.AppID) == "" || strings.TrimSpace(fc.AppSecret) == "" {
-		return errors.New("bots.feishu 已启用，但 app_id / app_secret 未配置")
+	if strings.TrimSpace(settings.credID) == "" || strings.TrimSpace(settings.credSecret) == "" {
+		return fmt.Errorf("bots.%s 已启用，但凭证未配置", channel)
 	}
-	m := model.Model(fc.Model)
-	if m == "" {
-		m = model.ClaudeCode
+	mdl := model.Model(settings.model)
+	if mdl == "" {
+		mdl = model.ClaudeCode
 	}
-	if _, err := model.Parse(string(m)); err != nil {
-		return fmt.Errorf("bots.feishu.model 非法: %w", err)
+	if _, err := model.Parse(string(mdl)); err != nil {
+		return fmt.Errorf("bots.%s.model 非法: %w", channel, err)
 	}
 
-	// 机器人的 MCP 配置复用独立副本（含密钥环境注入），与代理互不影响。
-	botCfg := *s.cfg
-	botCfg.MCP.Env = nil
-	if fc2 := s.cfg.Secrets; fc2.AnthropicAPIKey != "" || fc2.OpenAIAPIKey != "" {
-		env := map[string]string{}
-		if fc2.AnthropicAPIKey != "" {
-			env["ANTHROPIC_API_KEY"] = fc2.AnthropicAPIKey
-		}
-		if fc2.OpenAIAPIKey != "" {
-			env["OPENAI_API_KEY"] = fc2.OpenAIAPIKey
-		}
-		botCfg.MCP.Env = env
+	s.botsMu.Lock()
+	if _, exists := s.bots[channel]; exists {
+		s.botsMu.Unlock()
+		return fmt.Errorf("%s 机器人已在运行", channel)
 	}
-	registry := mcp.NewRegistry(botCfg.MCP, s.log)
-	workerPool := pool.New(s.cfg.WorkerPool.MaxConcurrency, s.cfg.WorkerPool.QueueSize,
-		pool.WithPanicHandler(func(jobID string, recovered any) {
-			s.log.Error("bot worker panic recovered", port.F("task_id", jobID), port.F("panic", recovered))
-		}))
+	s.botsMu.Unlock()
 
-	// 同机单实例锁：锁文件放在配置文件所在目录。
-	lockDir := s.cfgPath
-	if lockDir != "" {
-		lockDir = filepath.Dir(lockDir)
-	} else {
-		lockDir = defaultClientWorkDir()
-	}
-	flock, err := feishubot.LockFile(lockDir, fc.AppID)
+	// 1) 单实例锁（fail-fast：拿不到锁就不创建任何资源）。
+	flock, err := lockfile.Acquire(s.botLockDir(), channel, settings.credID)
 	if err != nil {
-		_ = registry.Close()
 		return err
 	}
+
+	// 2) 该渠道独立的 MCP 注册表（含密钥环境注入），与代理/其他渠道互不影响。
+	botCfg := *s.cfg
+	botCfg.MCP.Env = s.secretsEnv(s.cfg)
+	registry := mcp.NewRegistry(botCfg.MCP, s.log)
 
 	policy := agentapp.Policy{
 		MaxConcurrency: s.cfg.WorkerPool.MaxConcurrency,
 		QueueSize:      s.cfg.WorkerPool.QueueSize,
 		MCPTimeout:     s.cfg.MCP.ClaudeCode.RequestTimeout,
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
+	workerPool := pool.New(s.cfg.WorkerPool.MaxConcurrency, s.cfg.WorkerPool.QueueSize,
+		pool.WithPanicHandler(func(jobID string, recovered any) {
+			s.log.Error("bot worker panic recovered",
+				port.F("channel", channel), port.F("task_id", jobID), port.F("panic", recovered))
+		}))
 	workerPool.Start(ctx)
 
-	// 机器人本地执行不上报网关：executor 的 reporter 实际由每个任务按流式卡片动态注入，
-	// 这里传 nil 即可（ExecuteWith 要求按任务注入）。
+	// 3) 平台无关的应用层服务 + 工厂构造渠道 runner（策略模式）。
+	// 机器人本地执行不上报网关：executor 的 reporter 由每个任务按流式卡片动态注入。
 	executor := agentapp.NewTaskExecutor(registry, nil, s.log, policy)
-
-	svc := agentapp.NewFeishuBotService(nil, executor, workerPool, agentapp.FeishuBotConfig{
-		Model:        m,
-		MentionOnly:  fc.MentionOnly,
-		SystemPrompt: fc.SystemPrompt,
+	svc := agentapp.NewIMBotService(nil, executor, workerPool, agentapp.IMBotServiceConfig{
+		Channel:      channel,
+		Model:        mdl,
+		MentionOnly:  settings.mentionOnly,
+		SystemPrompt: settings.systemPrompt,
 	}, policy, s.log)
-	runner, err := feishubot.NewRunner(fc.AppID, fc.AppSecret, svc.OnMessage, s.log)
+	creds := imbot.Credentials{}
+	switch channel {
+	case imbot.ChannelFeishu:
+		creds = imbot.Credentials{AppID: settings.credID, AppSecret: settings.credSecret}
+	case imbot.ChannelWeCom:
+		creds = imbot.Credentials{BotID: settings.credID, BotSecret: settings.credSecret}
+	}
+	runner, err := imbot.New(imbot.Spec{
+		Channel: channel, Creds: creds, OnMessage: svc.OnMessage, Log: s.log,
+	})
 	if err != nil {
 		cancel()
-		flock.Release()
+		workerPool.Stop()
 		_ = registry.Close()
+		flock.Release()
 		return err
 	}
 	svc.SetRunner(runner)
 
-	s.botMu.Lock()
-	s.botRunning = true
-	s.botCancel = cancel
-	s.botPool = workerPool
-	s.botReg = registry
-	s.botLock = flock
-	s.botMu.Unlock()
+	rt := &botRuntime{
+		channel: channel, cancel: cancel, pool: workerPool,
+		reg: registry, lock: flock, runner: runner, svc: svc,
+	}
+	s.botsMu.Lock()
+	if _, exists := s.bots[channel]; exists {
+		// 并发 StartBot 竞态兜底。
+		s.botsMu.Unlock()
+		cancel()
+		workerPool.Stop()
+		_ = registry.Close()
+		flock.Release()
+		return fmt.Errorf("%s 机器人已在运行", channel)
+	}
+	s.bots[channel] = rt
+	s.botsMu.Unlock()
 
-	s.botWg.Add(1)
+	rt.wg.Add(1)
 	go func() {
-		defer s.botWg.Done()
-		if err := runner.Start(ctx); err != nil {
-			s.log.Warn("feishu bot exited", port.F("err", err.Error()))
+		defer rt.wg.Done()
+		err := runner.Start(ctx)
+		if err != nil && ctx.Err() == nil {
+			s.log.Warn("im bot exited", port.F("channel", channel), port.F("err", err.Error()))
 		}
 	}()
-	s.log.Info("feishu bot started",
-		port.F("app_id", fc.AppID), port.F("model", m.String()),
-		port.F("mention_only", fc.MentionOnly))
+	s.log.Info("im bot started",
+		port.F("channel", channel), port.F("credential_id", settings.credID),
+		port.F("model", mdl.String()), port.F("mention_only", settings.mentionOnly))
 	s.emitEvent("status", s.Status())
 	return nil
 }
 
-// StopBots 停止全部 IM 机器人并释放其独立运行时。
+// StopBots 停止全部渠道（幂等）。
 func (s *Service) StopBots() {
-	s.botMu.Lock()
-	if !s.botRunning {
-		s.botMu.Unlock()
-		return
+	for _, channel := range imbot.Channels() {
+		s.StopBot(channel)
 	}
-	s.botRunning = false
-	cancel := s.botCancel
-	workerPool := s.botPool
-	registry := s.botReg
-	flock := s.botLock
-	s.botCancel, s.botPool, s.botReg, s.botLock = nil, nil, nil, nil
-	s.botMu.Unlock()
+}
 
-	if cancel != nil {
-		cancel()
+// StopBot 停止指定渠道并释放其独立运行时；返回它是否原本在运行。
+func (s *Service) StopBot(channel string) bool {
+	s.botsMu.Lock()
+	rt := s.bots[channel]
+	delete(s.bots, channel)
+	s.botsMu.Unlock()
+	if rt == nil {
+		return false
 	}
-	shutdownCtx, c := context.WithTimeout(context.Background(), 20*time.Second)
-	defer c()
+
+	rt.cancel()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		if workerPool != nil {
-			workerPool.Stop()
-		}
+		rt.pool.Stop()
 		close(done)
 	}()
+	poolStopped := false
 	select {
 	case <-done:
+		poolStopped = true
 	case <-shutdownCtx.Done():
-		s.log.Warn("bots shutdown timeout, some tasks may be interrupted")
+		s.log.Warn("bot shutdown timeout, some tasks may still be running",
+			port.F("channel", channel))
 	}
-	s.botWg.Wait()
-	if registry != nil {
-		if err := registry.Close(); err != nil {
-			s.log.Warn("close bot mcp registry failed", port.F("err", err.Error()))
+	rt.wg.Wait()
+	if err := rt.reg.Close(); err != nil {
+		s.log.Warn("close bot mcp registry failed",
+			port.F("channel", channel), port.F("err", err.Error()))
+	}
+	if poolStopped {
+		rt.lock.Release()
+	} else {
+		// 仍有任务未结束：不能立即删锁，否则另一个实例会马上抢锁，与本进程
+		// 残留任务形成短暂双连接。改为放弃心跳，让锁在 staleAfter 后自然失效。
+		rt.lock.Abandon()
+		s.log.Warn("bot lock abandoned; it will expire after the stale window",
+			port.F("channel", channel), port.F("stale_after", "20s"))
+	}
+	s.log.Info("im bot stopped", port.F("channel", channel))
+	s.emitEvent("status", s.Status())
+	return true
+}
+
+// ---- 本地 AI 工具运行时（与代理 / 机器人独立，手动启停） ----
+
+// ToolStartResult 单个本地 AI 工具的启动（预热）结果。
+type ToolStartResult struct {
+	Model  string `json:"model"`
+	Label  string `json:"label"`
+	Mode   string `json:"mode"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+// ToolsRunning 本地 AI 工具运行时是否处于启动状态。
+func (s *Service) ToolsRunning() bool {
+	s.toolsMu.Lock()
+	defer s.toolsMu.Unlock()
+	return s.toolsRunning
+}
+
+// StartTools 启动（预热）配置中已启用的本地 AI 工具。
+//
+// 仅显式调用：客户端开机不会自动执行。MCP 模式工具的常驻子进程会被立即
+// 拉起并完成握手；CLI 模式工具无常驻进程，只做免额度的可执行性探测。
+// 单个工具失败不影响其他工具；全部失败时返回错误并释放注册表。
+func (s *Service) StartTools() ([]ToolStartResult, error) {
+	s.toolsMu.Lock()
+	if s.toolsRunning {
+		s.toolsMu.Unlock()
+		return nil, errors.New("本地 AI 工具已在运行")
+	}
+	s.toolsMu.Unlock()
+
+	cfg := s.cfg
+	enabled := make([]model.Model, 0, len(model.All()))
+	for _, m := range model.All() {
+		if cfg.MCP.For(m).Enabled {
+			enabled = append(enabled, m)
 		}
 	}
-	if flock != nil {
-		flock.Release()
+	if len(enabled) == 0 {
+		return nil, errors.New("没有已启用的本地 AI 工具：请先在配置中启用至少一个工具并保存")
 	}
-	s.log.Info("feishu bot stopped")
+
+	// 使用独立配置副本与独立注册表，预热出的子进程不受代理 / 机器人
+	// 启停影响；密钥环境注入与代理启动时保持一致。
+	local := *cfg
+	local.MCP.Env = s.secretsEnv(cfg)
+	registry := mcp.NewRegistry(local.MCP, s.log)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Second)
+	defer cancel()
+	warmups := registry.WarmupEnabled(ctx)
+
+	results := make([]ToolStartResult, 0, len(warmups))
+	okCount := 0
+	for _, w := range warmups {
+		acfg := cfg.MCP.For(w.Model)
+		label := w.Model.String()
+		if acfg.Command != "" {
+			label = acfg.Command
+		}
+		mode := string(w.Mode)
+		if mode == "" {
+			mode = string(mcp.ModeMCP)
+		}
+		if w.OK {
+			okCount++
+		}
+		results = append(results, ToolStartResult{
+			Model: w.Model.String(), Label: label, Mode: mode,
+			OK: w.OK, Detail: w.Detail,
+		})
+		s.log.Info("local ai tool warmup",
+			port.F("model", w.Model.String()), port.F("mode", mode),
+			port.F("ok", w.OK), port.F("detail", w.Detail))
+	}
+	if okCount == 0 {
+		_ = registry.Close()
+		return results, errors.New("全部已启用工具启动失败，请确认工具已安装并登录（详见各工具报错）")
+	}
+
+	s.toolsMu.Lock()
+	s.toolsRunning = true
+	s.toolsReg = registry
+	s.toolsMu.Unlock()
+	s.log.Info("local ai tools started", port.F("enabled", len(enabled)), port.F("ready", okCount))
+	s.emitEvent("status", s.Status())
+	return results, nil
+}
+
+// StopTools 关闭预热的 MCP 子进程并释放工具运行时。CLI 模式无资源需释放。
+func (s *Service) StopTools() {
+	s.toolsMu.Lock()
+	if !s.toolsRunning {
+		s.toolsMu.Unlock()
+		return
+	}
+	s.toolsRunning = false
+	registry := s.toolsReg
+	s.toolsReg = nil
+	s.toolsMu.Unlock()
+
+	if registry != nil {
+		if err := registry.Close(); err != nil {
+			s.log.Warn("close tools mcp registry failed", port.F("err", err.Error()))
+		}
+	}
+	s.log.Info("local ai tools stopped")
 	s.emitEvent("status", s.Status())
 }
 
-// BotTestResult 机器人连接测试结果。
+// secretsEnv 从配置密钥派发给 AI CLI 子进程的环境变量。
+func (s *Service) secretsEnv(cfg *config.AgentConfig) map[string]string {
+	env := map[string]string{}
+	if cfg.Secrets.AnthropicAPIKey != "" {
+		env["ANTHROPIC_API_KEY"] = cfg.Secrets.AnthropicAPIKey
+	}
+	if cfg.Secrets.OpenAIAPIKey != "" {
+		env["OPENAI_API_KEY"] = cfg.Secrets.OpenAIAPIKey
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
+}
+
+// BotTestResult 机器人连接测试结果（不含任何 secret）。
 type BotTestResult struct {
 	Channel string `json:"channel"`
 	OK      bool   `json:"ok"`
@@ -459,27 +751,54 @@ type BotTestResult struct {
 	Expire  int    `json:"expire_seconds,omitempty"`
 }
 
-// TestBot 不启动长连接，仅验证当前配置的机器人凭证是否可用。
+// TestBot 不启动长连接，仅验证指定渠道当前配置的凭证是否可用。
+// channel 留空时默认测飞书（兼容旧界面/旧调用）。
 func (s *Service) TestBot(channel string) (BotTestResult, error) {
-	fc := s.cfg.Bots.Feishu
-	if strings.TrimSpace(fc.AppID) == "" || strings.TrimSpace(fc.AppSecret) == "" {
-		return BotTestResult{Channel: "feishu", Detail: "未配置 App ID / App Secret"}, errors.New("feishu app credentials missing")
+	if strings.TrimSpace(channel) == "" {
+		channel = imbot.ChannelFeishu
 	}
-	runner, err := feishubot.NewRunner(fc.AppID, fc.AppSecret,
-		func(context.Context, port.IMBotMessage) error { return nil }, s.log)
+	if !imbot.IsSupported(channel) {
+		return BotTestResult{Channel: channel, Detail: "未知渠道: " + channel},
+			fmt.Errorf("未知 IM 渠道: %s", channel)
+	}
+	settings := channelBotConfig(s.cfg, channel)
+	if strings.TrimSpace(settings.credID) == "" || strings.TrimSpace(settings.credSecret) == "" {
+		return BotTestResult{Channel: channel, Detail: "该渠道凭证未配置"},
+			errors.New(channel + " credentials missing")
+	}
+	creds := imbot.Credentials{}
+	switch channel {
+	case imbot.ChannelFeishu:
+		creds = imbot.Credentials{AppID: settings.credID, AppSecret: settings.credSecret}
+	case imbot.ChannelWeCom:
+		creds = imbot.Credentials{BotID: settings.credID, BotSecret: settings.credSecret}
+	}
+	runner, err := imbot.New(imbot.Spec{
+		Channel: channel, Creds: creds,
+		OnMessage: func(context.Context, port.IMBotMessage) error { return nil },
+		Log:       s.log,
+	})
 	if err != nil {
-		return BotTestResult{Channel: "feishu", Detail: err.Error()}, err
+		return BotTestResult{Channel: channel, Detail: err.Error()}, err
+	}
+	tester, ok := runner.(port.IMBotCredentialTester)
+	if !ok {
+		return BotTestResult{Channel: channel, Detail: "该渠道不支持凭证测试"},
+			errors.New("channel has no credential tester")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	r, err := runner.TestCredentials(ctx)
+	r, err := tester.TestCredentials(ctx)
 	if err != nil {
-		return BotTestResult{Channel: "feishu", OK: false, Detail: r.Detail}, err
+		return BotTestResult{Channel: channel, OK: false, Detail: r.Detail}, err
 	}
-	return BotTestResult{
-		Channel: "feishu", OK: true, Detail: r.Detail,
-		Tenant: r.TenantKey, Expire: r.ExpireSeconds,
-	}, nil
+	out := BotTestResult{
+		Channel: channel, OK: true, Detail: r.Detail, Expire: r.ExpireSeconds,
+	}
+	if r.Extra != nil {
+		out.Tenant = r.Extra["tenant_key"]
+	}
+	return out, nil
 }
 
 // Stop 优雅停止 Agent：取消上下文、等待在途任务结束（最多 30s）、关闭 MCP 注册表。

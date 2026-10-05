@@ -13,6 +13,10 @@ const cfg = computed(() => state.config)
 const configPath = computed(() => state.status?.config_path ?? '')
 /** 飞书机器人的实时运行态（独立于代理）。 */
 const botRuntime = computed(() => state.status?.bots?.feishu)
+/** 企业微信机器人的实时运行态。 */
+const wecomRuntime = computed(() => state.status?.bots?.wecom)
+/** 任意渠道机器人正在启停 / 重启时，禁用「保存并重启」避免交叉操作。 */
+const anyBotBusy = computed(() => Object.values(state.botBusy).some(Boolean))
 const logLevels = ['debug', 'info', 'warn', 'error']
 const botModels = [
   { value: '', label: '自动（claude-code）' },
@@ -33,6 +37,8 @@ const TOOLS = [
 
 /** 飞书机器人配置（store 已保证 bots.feishu 存在）。 */
 const feishu = computed(() => cfg.value!.bots!.feishu)
+/** 企业微信机器人配置（store 已保证 bots.wecom 存在）。 */
+const wecom = computed(() => cfg.value!.bots!.wecom)
 
 async function onSave(): Promise<void> {
   // 成功/失败的提示（含后台原始错误信息）由 store 统一弹 toast，这里不再重复弹。
@@ -52,17 +58,24 @@ async function onSaveAndRestart(): Promise<void> {
 
 /** 是否有正在运行、重启后会受影响的服务（仅用于按钮旁的提示）。 */
 const anyServiceRunning = computed(
-  () => !!state.status?.running || !!state.status?.bots?.feishu?.running
+  () =>
+    !!state.status?.running ||
+    Object.values(state.status?.bots ?? {}).some((b) => b.running)
 )
 
-/** 测试飞书凭证（不建立长连接，校验已保存的配置）。 */
-async function onTestBot(): Promise<void> {
-  const r = await testBot('feishu')
+/** 测试指定渠道凭证（不建立长连接，校验已保存的配置）。 */
+async function onTestBot(channel: 'feishu' | 'wecom'): Promise<void> {
+  const r = await testBot(channel)
   if (!r) {
     emit('notify', '连接测试失败，详见运行日志', true)
   } else if (r.ok) {
     const mins = Math.max(1, Math.floor((r.expire_seconds ?? 0) / 60))
-    emit('notify', r.tenant_key ? `连接正常：${r.detail}（租户 ${r.tenant_key}，凭证约 ${mins} 分钟有效）` : `连接正常：${r.detail}`)
+    const label = channel === 'feishu' ? '飞书' : '企业微信'
+    if (r.tenant_key) {
+      emit('notify', `连接正常：${r.detail}（租户 ${r.tenant_key}，凭证约 ${mins} 分钟有效）`)
+    } else {
+      emit('notify', `${label}连接正常：${r.detail}`)
+    }
   } else {
     emit('notify', `连接失败：${r.detail}`, true)
   }
@@ -195,10 +208,10 @@ function toggleTool(key: string): void {
         </button>
         <button
           class="btn btn--primary"
-          :disabled="state.busy || state.botBusy || state.testing"
+          :disabled="state.busy || anyBotBusy || state.testing"
           @click="onSaveAndRestart"
         >
-          {{ state.busy || state.botBusy ? '保存并重启中…' : '保存并重启本地 AI' }}
+          {{ state.busy || anyBotBusy ? '保存并重启中…' : '保存并重启本地 AI' }}
         </button>
         <span class="field__hint">
           工作目录、CLI 命令、工具开关、密钥等改动在服务启动时固化，
@@ -303,23 +316,23 @@ function toggleTool(key: string): void {
 
         <!-- 凭证测试：不建立长连接，校验已保存配置 -->
         <div class="row row--wrap bot-test">
-          <button class="btn" :disabled="state.botTesting" @click="onTestBot">
-            {{ state.botTesting ? '测试中…' : '测试连接' }}
+          <button class="btn" :disabled="state.botTesting.feishu" @click="onTestBot('feishu')">
+            {{ state.botTesting.feishu ? '测试中…' : '测试连接' }}
           </button>
           <span class="field__hint">仅校验 App ID / Secret，不会启动长连接；校验的是<strong>已保存</strong>的配置，修改后请先保存。</span>
         </div>
         <div
-          v-if="state.botTestResult"
+          v-if="state.botTestResults.feishu"
           class="bot-test__result"
-          :class="state.botTestResult.ok ? 'bot-test__result--ok' : 'bot-test__result--err'"
+          :class="state.botTestResults.feishu.ok ? 'bot-test__result--ok' : 'bot-test__result--err'"
         >
-          <template v-if="state.botTestResult.ok">
-            ✓ {{ state.botTestResult.detail }}<template v-if="state.botTestResult.tenant_key">
-              （租户 {{ state.botTestResult.tenant_key }}，token 有效期约
-              {{ Math.max(1, Math.floor((state.botTestResult.expire_seconds ?? 0) / 60)) }} 分钟）
+          <template v-if="state.botTestResults.feishu.ok">
+            ✓ {{ state.botTestResults.feishu.detail }}<template v-if="state.botTestResults.feishu.tenant_key">
+              （租户 {{ state.botTestResults.feishu.tenant_key }}，token 有效期约
+              {{ Math.max(1, Math.floor((state.botTestResults.feishu.expire_seconds ?? 0) / 60)) }} 分钟）
             </template>
           </template>
-          <template v-else>✗ {{ state.botTestResult.detail }}</template>
+          <template v-else>✗ {{ state.botTestResults.feishu.detail }}</template>
         </div>
 
         <div class="notice">
@@ -331,13 +344,109 @@ function toggleTool(key: string): void {
       </template>
     </div>
 
+    <!-- 企业微信机器人（智能机器人 API 模式，WebSocket 长连接，无需公网域名） -->
+    <div class="card" :class="{ 'card--dim': !wecom.enabled }">
+      <div class="card__head">
+        <div class="card__titlewrap">
+          <span class="card__title">企业微信机器人</span>
+          <span v-if="wecom.enabled" class="badge" :class="wecomRuntime?.running ? 'badge--on' : 'badge--off'">
+            {{ wecomRuntime?.running ? '运行中' : '已启用 · 未运行' }}
+          </span>
+          <span v-else class="badge badge--off">未启用</span>
+        </div>
+        <span class="card__hint">智能机器人 API 模式 · 长连接直连，无需公网域名 / 回调地址</span>
+      </div>
+
+      <label class="switch">
+        <input v-model="wecom.enabled" type="checkbox" />
+        <span class="switch__track" />
+        <span>启用企业微信机器人（消息在本机直接处理并回复，不经过网关队列）</span>
+      </label>
+
+      <template v-if="wecom.enabled">
+        <div class="divider" />
+        <div class="grid grid--2">
+          <label class="field">
+            <span class="field__label">Bot ID</span>
+            <input
+              v-model="wecom.bot_id"
+              class="input input--mono"
+              placeholder="智能机器人的 Bot ID"
+            />
+          </label>
+          <label class="field">
+            <span class="field__label">Secret</span>
+            <input
+              v-model="wecom.secret"
+              class="input input--mono"
+              type="password"
+              placeholder="智能机器人的 Secret"
+            />
+            <span class="field__hint">建议改用环境变量 WECOM_BOT_SECRET 注入</span>
+          </label>
+          <label class="field">
+            <span class="field__label">处理模型</span>
+            <select v-model="wecom.model" class="select">
+              <option v-for="m in botModels" :key="m.value" :value="m.value">{{ m.label }}</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="divider" />
+        <label class="switch">
+          <input v-model="wecom.mention_only" type="checkbox" />
+          <span class="switch__track" />
+          <span>群聊中仅响应 @机器人 的消息（私聊始终响应）</span>
+        </label>
+
+        <label class="field" style="margin-top: 12px">
+          <span class="field__label">附加系统提示（可选）</span>
+          <textarea
+            v-model="wecom.system_prompt"
+            class="textarea"
+            rows="2"
+            placeholder="例如：回答请简洁，并给出可执行的修改建议"
+          />
+        </label>
+
+        <div class="divider" />
+
+        <!-- 凭证测试：不建立长连接，校验已保存配置 -->
+        <div class="row row--wrap bot-test">
+          <button class="btn" :disabled="state.botTesting.wecom" @click="onTestBot('wecom')">
+            {{ state.botTesting.wecom ? '测试中…' : '测试连接' }}
+          </button>
+          <span class="field__hint">仅校验 Bot ID / Secret（订阅握手），不会保持长连接；校验的是<strong>已保存</strong>的配置，修改后请先保存。</span>
+        </div>
+        <div
+          v-if="state.botTestResults.wecom"
+          class="bot-test__result"
+          :class="state.botTestResults.wecom.ok ? 'bot-test__result--ok' : 'bot-test__result--err'"
+        >
+          <template v-if="state.botTestResults.wecom.ok">
+            ✓ {{ state.botTestResults.wecom.detail }}
+          </template>
+          <template v-else>✗ {{ state.botTestResults.wecom.detail }}</template>
+        </div>
+
+        <div class="notice">
+          <strong>首次使用：</strong>在企业微信管理后台
+          「安全与管理 → 管理工具 → 智能机器人」中创建机器人，启用 <strong>API 模式</strong>
+          并选择「长连接」接入，复制 Bot ID 与 Secret 填入上方，并把机器人发布到可见范围。
+          保存配置后到「概览」页单独启动该渠道即可，无需重启代理、与飞书渠道互不影响。
+          处理消息时 AI 回复以<strong>流式消息</strong>实时更新：思考与工具过程显示在灰色引用区，
+          正文生成后过程折叠为摘要；同一 Bot ID 全平台只允许一条长连接，多开会重复回复。
+        </div>
+      </template>
+    </div>
+
     <div class="row" style="margin-top: 16px">
       <button class="btn btn--primary" :disabled="state.busy" @click="onSave">
         {{ state.busy ? '保存中…' : '保存配置' }}
       </button>
       <button
         class="btn"
-        @click="emit('notify', '代理相关改动需在概览页重启代理；飞书机器人改动只需重启机器人服务，两者互不影响')"
+        @click="emit('notify', '代理相关改动需在概览页重启代理；飞书 / 企业微信机器人改动只需在概览页重启对应渠道，各渠道与代理互不影响')"
       >
         改动如何生效？
       </button>

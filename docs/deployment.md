@@ -44,8 +44,7 @@ cp .env.example .env
 | `MYSQL_DATABASE` / `MYSQL_USER` / `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD` | compose 启动 MySQL 8 容器与建库授权 |
 | `AUTH_SESSION_TTL` | 网关 `auth.session_ttl`（默认 168h） |
 | `GATEWAY_ADDR` | 网关 `server.addr`（监听） |
-| `GATEWAY_PUBLIC_ADDR` | 网关 `server.public_addr`（对外 https 地址） |
-| `BOT_DEFAULT_MODEL` | 网关 `bot.default_model` |
+| `CHAT_DEFAULT_MODEL` | 网关 `chat.default_model`（网页对话默认 AI 工具） |
 | `LOG_LEVEL` | 两端 `log.level` |
 
 **本地客户端（在你的开发机上设置，不在 VPS 上）**
@@ -67,8 +66,7 @@ cp .env.example .env
 
 ```yaml
 server:
-  # 网关对外地址，机器人回调 URL 由它拼出，必须公网可达
-  public_addr: "https://cp.example.com"
+  addr: ":9022"
 
 database:
   dsn: "codeporter:强密码@tcp(127.0.0.1:3306)/codeporter?parseTime=true&charset=utf8mb4"
@@ -102,8 +100,8 @@ docker compose logs -f gateway
 
 | 容器 | 作用 | 端口 |
 |---|---|---|
-| `codeporter-mysql` | MySQL 8，账号/秘钥/会话/实例/机器人持久化（mysql-data 卷） | 仅容器网络内 |
-| `codeporter-gateway` | Go 网关 + 托管 Vue 控制台 + IM 回调 | 映射到宿主 `${WEB_PORT:-80}` |
+| `codeporter-mysql` | MySQL 8，账号/秘钥/会话/实例持久化（mysql-data 卷） | 仅容器网络内 |
+| `codeporter-gateway` | Go 网关 + 托管 Vue 控制台 | 映射到宿主 `${WEB_PORT:-80}` |
 
 网关首次启动会自动执行数据库迁移（建表 + 种子化管理员 `admin/admin123`）。
 浏览器打开 `http://<服务器IP>` → 用 **admin / admin123** 登录，然后立即在用户菜单修改密码。
@@ -117,7 +115,10 @@ docker compose logs -f gateway
 
 ## 三、配置 HTTPS（生产必做）
 
-IM 平台（飞书、企业微信）要求回调地址必须是 HTTPS。推荐在宿主用 Caddy 自动签发：
+生产环境的网页控制台与 OpenAI 兼容接口必须走 HTTPS（秘钥与会话令牌不应明文传输）。
+> 注：飞书机器人已改为本地客户端长连接模式，**不需要**公网回调地址，HTTPS 仅服务于网关本身。
+
+推荐在宿主用 Caddy 自动签发：
 
 ```bash
 # 安装 Caddy（Debian/Ubuntu）
@@ -143,8 +144,6 @@ docker compose up -d
 sudo systemctl reload caddy
 ```
 
-然后把 `gateway.yaml` 的 `server.public_addr` 改成 `https://cp.example.com` 并重启网关。
-
 ---
 
 ## 四、日常运维
@@ -166,16 +165,16 @@ docker compose up -d --build       # 会重新构建前后端镜像
 
 ### 数据持久化
 
-机器人配置保存在名为 `gateway-data` 的卷里（容器内 `/app/data/bots.json`）：
+需要持久化的数据只有 MySQL（`mysql-data` 卷）：账号、秘钥、会话与节点身份。
 
 ```bash
-docker compose down                # 不会删除卷，配置仍在
-docker volume inspect codeporter_gateway-data   # 查看卷位置
-docker run --rm -v codeporter_gateway-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/bots-backup.tar.gz -C /data .
+docker compose down                # 不会删除卷，数据仍在
+docker volume inspect codeporter_mysql-data   # 查看卷位置
+docker run --rm -v codeporter_mysql-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/mysql-backup.tar.gz -C /data .
 ```
 
-> 任务与队列在内存中，网关重启后任务记录会清空（机器人配置不会丢）。
+> 任务与队列在网关内存中，重启后任务记录会清空；账号体系不受影响。
 
 ---
 
@@ -348,7 +347,7 @@ codeporter-agent -config configs/agent.yaml
 | macOS | `bash build-client.sh`（或 `make client-dist-host`） | dmg / zip |
 | Linux | `bash build-client.sh` | AppImage |
 
-详见 [client/README.md](../../client/README.md) 与根目录 README 的「在开发机上启动 LocalAgent」。
+详见 [client/README.md](../client/README.md) 与根目录 README 的「在开发机上启动 LocalAgent」。
 
 无界面场景（服务器 / 容器 / CI）直接运行控制台程序即可：
 
@@ -391,7 +390,6 @@ WantedBy=default.target
 | 客户端 401/403 | 秘钥是否含 `agent` scope、是否已过期/被删除；`X-Agent-ID` 是否随请求发送 |
 | 客户端启动报「agent.token 已废弃」 | 旧配置请改用 `agent.key`/`AGENT_KEY`（控制台秘钥），见控制台「秘钥」页 |
 | 节点一直离线 | agent.yaml 的 `gateway.addr` 是否正确；秘钥是否有效；实例 ID 是否自动生成成功 |
-| 机器人回调失败 | `public_addr` 是否是公网 https 地址；飞书/企微后台保存回调时的报错 |
 | 网页对话提示 409 / 无可用客户端 | 名下有多台实例需在页面选择；0 台时请先用秘钥启动客户端 |
 | 网页对话一直转圈 | 本地 Agent 是否在线；本机 AI 工具是否已安装并登录 |
 | SSE 不吐字 | Nginx 是否 `proxy_buffering off`（本项目 nginx.conf 已配置） |

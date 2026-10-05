@@ -6,27 +6,71 @@ import ToolCard from '../components/ToolCard.vue'
 
 const emit = defineEmits<{ go: ['settings' | 'logs']; notify: [string, boolean?] }>()
 
-const { state, startAgent, stopAgent, startBots, stopBots, testCli } = useStore()
+const { state, startAgent, stopAgent, startBots, stopBots, startTools, stopTools, testCli } =
+  useStore()
 
 /** 代理（网关任务通道）运行状态。 */
 const running = computed(() => !!state.status?.running)
 const busy = computed(() => state.busy || state.testing)
 
-/** 飞书机器人运行态（与代理独立，来自核心 status.bots.feishu）。 */
-const botStatus = computed(() => state.status?.bots?.feishu)
-const botRunning = computed(() => !!botStatus.value?.running)
-const botEnabled = computed(() => !!state.config?.bots?.feishu?.enabled)
-const botConfigured = computed(
-  () =>
-    !!botStatus.value?.configured ||
-    (!!state.config?.bots?.feishu?.app_id && !!state.config?.bots?.feishu?.app_secret)
+/**
+ * IM 机器人渠道元数据（展示层唯一的渠道清单，新增渠道时加一行即可）。
+ * credField 指向该渠道配置里的身份字段，用于 status 未到位时判断凭证是否填全。
+ */
+const BOT_CHANNELS = [
+  {
+    key: 'feishu',
+    name: '飞书',
+    credField: 'app_id',
+    secretField: 'app_secret',
+    credLabel: 'App ID',
+    streamTag: '思考过程实时推送到同一张卡片',
+    singleNote: '同一 App ID 全机只允许一个实例，重复回复多由多开引起'
+  },
+  {
+    key: 'wecom',
+    name: '企业微信',
+    credField: 'bot_id',
+    secretField: 'secret',
+    credLabel: 'Bot ID',
+    streamTag: '流式消息实时更新，过程区在正文生成后折叠',
+    singleNote: '同一 Bot ID 全平台只允许一条长连接，多开会重复回复'
+  }
+] as const
+
+/** 某渠道的实时运行态（来自核心 status.bots.<channel>）。 */
+function botRuntimeStatus(key: string) {
+  return state.status?.bots?.[key]
+}
+const botRunning = (key: string): boolean => !!state.status?.bots?.[key]?.running
+const botEnabled = (key: string): boolean => {
+  const b = state.config?.bots?.[key]
+  return !!b?.enabled
+}
+/** 凭证是否配置完整：优先信后端状态，状态未到位时回退看本地配置。 */
+function botConfigured(key: string, credField: string, secretField: string): boolean {
+  const fromStatus = state.status?.bots?.[key]?.configured
+  if (typeof fromStatus === 'boolean') return fromStatus
+  const b = state.config?.bots?.[key] as
+    | Record<string, string | boolean | undefined>
+    | undefined
+  return !!b && !!(b[credField] as string) && !!(b[secretField] as string)
+}
+/** 正在运行的渠道数（标题徽标用）。 */
+const runningBotCount = computed(
+  () => BOT_CHANNELS.filter((c) => botRunning(c.key)).length
 )
+/** 至少一个渠道已启用（卡片整体未启用态用）。 */
+const anyBotEnabled = computed(() => BOT_CHANNELS.some((c) => botEnabled(c.key)))
 
 /** 可用工具数（健康探测通过）。 */
 const availableCount = computed(() => state.health.filter((h) => h.available).length)
 
 /** 已启用的工具。 */
 const enabledTools = computed(() => (state.status?.ai_tools ?? []).filter((t) => t.enabled))
+
+/** 本地 AI 工具预热运行时状态（独立于代理 / 机器人，仅手动启停）。 */
+const toolsRunning = computed(() => !!state.status?.tools_running)
 
 /** 任务统计。 */
 const taskStats = computed(() => {
@@ -46,14 +90,26 @@ async function onToggle(): Promise<void> {
   else await startAgent()
 }
 
-/** 独立开关机器人服务：不经过网关，消息由本机长连接直接闭环。 */
-async function onToggleBot(): Promise<void> {
-  if (botRunning.value) {
-    await stopBots()
+/** 独立开关单个机器人渠道：不经过网关，消息由本机长连接直接闭环。 */
+async function onToggleBot(key: string): Promise<void> {
+  if (botRunning(key)) {
+    const err = await stopBots(key)
+    if (err) emit('notify', `机器人停止失败：${err}`, true)
     return
   }
-  const err = await startBots()
+  const err = await startBots(key)
   if (err) emit('notify', `机器人启动失败：${err}`, true)
+}
+
+/** 手动启停本地 AI 工具：仅预热配置中已启用的工具，开机不会自动启动。 */
+async function onToggleTools(): Promise<void> {
+  if (toolsRunning.value) {
+    const err = await stopTools()
+    if (err) emit('notify', `本地 AI 工具停止失败：${err}`, true)
+    return
+  }
+  const err = await startTools()
+  if (err) emit('notify', `本地 AI 工具启动失败：${err}`, true)
 }
 
 async function onTest(): Promise<void> {
@@ -73,7 +129,7 @@ async function onTest(): Promise<void> {
 <template>
   <div class="page-head">
     <h1>概览</h1>
-    <p>代理（网关下发的任务）与机器人（飞书长连接消息）是两个相互独立、可分别启停的服务。</p>
+    <p>代理（网关下发的任务）与 IM 机器人（飞书 / 企业微信长连接消息）相互独立；机器人各渠道之间也可分别启停。</p>
   </div>
 
   <!-- 关键指标 -->
@@ -140,57 +196,85 @@ async function onTest(): Promise<void> {
     <p class="svc-note">接收网关 / OpenAI 兼容接口 / 网页控制台下发的任务，调用本机 AI 执行后回传。</p>
   </div>
 
-  <!-- 机器人服务：飞书长连接，独立于代理启停 -->
-  <div class="card" :class="{ 'card--dim': !botEnabled }">
+  <!-- IM 机器人：多渠道长连接，各渠道独立于代理、独立于彼此启停 -->
+  <div class="card" :class="{ 'card--dim': !anyBotEnabled }">
     <div class="card__head">
       <div class="card__titlewrap">
-        <span class="card__title">机器人服务 · 飞书</span>
-        <span class="badge" :class="botRunning ? 'badge--on' : 'badge--off'">
-          {{ !botEnabled ? '未启用' : botRunning ? '运行中' : '已停止' }}
+        <span class="card__title">IM 机器人</span>
+        <span class="badge" :class="runningBotCount > 0 ? 'badge--on' : 'badge--off'">
+          {{ !anyBotEnabled ? '未启用' : runningBotCount > 0 ? `${runningBotCount} 个渠道运行中` : '已停止' }}
         </span>
       </div>
       <button class="btn btn--sm" @click="emit('go', 'settings')">配置</button>
     </div>
 
-    <div v-if="botEnabled" class="row row--wrap">
-      <button
-        class="btn"
-        :class="botRunning ? 'btn--danger' : 'btn--primary'"
-        :disabled="state.botBusy"
-        @click="onToggleBot"
-      >
-        {{ state.botBusy ? '处理中…' : botRunning ? '停止机器人' : '启动机器人' }}
-      </button>
-      <span class="spacer" />
-      <span class="tag tag--muted">长连接模式</span>
-      <span class="tag tag--primary">思考过程实时推送到同一张卡片</span>
-    </div>
+    <div
+      v-for="ch in BOT_CHANNELS"
+      :key="ch.key"
+      class="bot-channel"
+      :class="{ 'bot-channel--off': !botEnabled(ch.key) }"
+    >
+      <div class="row row--wrap">
+        <span class="bot-channel__name">{{ ch.name }}</span>
+        <span class="badge" :class="botRunning(ch.key) ? 'badge--on' : 'badge--off'">
+          {{ !botEnabled(ch.key) ? '未启用' : botRunning(ch.key) ? '运行中' : '已停止' }}
+        </span>
+        <span v-if="botEnabled(ch.key)" class="spacer" />
+        <button
+          v-if="botEnabled(ch.key)"
+          class="btn btn--sm"
+          :class="botRunning(ch.key) ? 'btn--danger' : 'btn--primary'"
+          :disabled="!!state.botBusy[ch.key]"
+          @click="onToggleBot(ch.key)"
+        >
+          {{ state.botBusy[ch.key] ? '处理中…' : botRunning(ch.key) ? '停止' : '启动' }}
+        </button>
+      </div>
 
-    <div v-if="botEnabled" class="row row--wrap svc-meta">
-      <span><span class="tool__meta">App ID：</span>{{ botStatus?.app_id || '未配置' }}</span>
-      <span><span class="tool__meta">模型：</span>{{ botStatus?.model || 'claude-code' }}</span>
-      <span class="tag" :class="botStatus?.mention_only ? 'tag--primary' : 'tag--muted'">
-        {{ botStatus?.mention_only ? '仅响应 @机器人' : '响应所有群消息' }}
-      </span>
-      <span v-if="!botConfigured" class="tag tag--err">凭证未配置完整</span>
-    </div>
-    <p v-if="botEnabled" class="svc-note">
-      机器人独立与飞书保持长连接，消息在本机直接处理，<strong>无需启动代理、无需公网域名</strong>；
-      同一 App ID 全机只允许一个实例，重复回复多由多开引起。
-    </p>
-    <div v-else class="row">
-      <button class="btn" @click="emit('go', 'settings')">前往配置并启用</button>
-      <span class="tool__meta" style="align-self: center">启用并保存 App ID / Secret 后，可在此独立启停。</span>
+      <div v-if="botEnabled(ch.key)" class="row row--wrap svc-meta">
+        <span><span class="tool__meta">{{ ch.credLabel}}：</span>{{ botRuntimeStatus(ch.key)?.credential_id || '未配置' }}</span>
+        <span><span class="tool__meta">模型：</span>{{ botRuntimeStatus(ch.key)?.model || 'claude-code' }}</span>
+        <span class="tag" :class="botRuntimeStatus(ch.key)?.mention_only ? 'tag--primary' : 'tag--muted'">
+          {{ botRuntimeStatus(ch.key)?.mention_only ? '仅响应 @机器人' : '响应所有群消息' }}
+        </span>
+        <span v-if="!botConfigured(ch.key, ch.credField, ch.secretField)" class="tag tag--err">
+          凭证未配置完整
+        </span>
+      </div>
+      <p v-if="botEnabled(ch.key)" class="svc-note">
+        <span class="tag tag--muted bot-channel__streamtag">{{ ch.streamTag }}</span>
+        {{ ch.singleNote }}。
+      </p>
+      <p v-else class="svc-note bot-channel__disabled">
+        未启用：在「配置」页开启并保存凭证后，可在此独立启停（不影响其他渠道与代理）。
+      </p>
     </div>
   </div>
 
-  <!-- 本地 AI 工具 -->
+  <!-- 本地 AI 工具：手动预热，独立于代理 / 机器人，开机不自动启动 -->
   <div class="card">
     <div class="card__head">
-      <span class="card__title">本地 AI 工具</span>
+      <div class="card__titlewrap">
+        <span class="card__title">本地 AI 工具</span>
+        <span class="badge" :class="toolsRunning ? 'badge--on' : 'badge--off'">
+          {{ toolsRunning ? '运行中' : '已停止' }}
+        </span>
+      </div>
       <span class="card__hint">工作目录：{{ workDir }}</span>
     </div>
-    <div class="grid grid--2">
+    <div class="row row--wrap">
+      <button
+        class="btn"
+        :class="toolsRunning ? 'btn--danger' : 'btn--primary'"
+        :disabled="state.toolsBusy || (!toolsRunning && enabledTools.length === 0)"
+        @click="onToggleTools"
+      >
+        {{ state.toolsBusy ? '处理中…' : toolsRunning ? '停止本地 AI 工具' : '启动本地 AI 工具' }}
+      </button>
+      <span class="spacer" />
+      <span class="tag tag--muted">仅启动配置中已启用的工具，开机不会自动启动</span>
+    </div>
+    <div class="grid grid--2" style="margin-top: 12px">
       <ToolCard
         v-for="t in state.status?.ai_tools ?? []"
         :key="t.model"
@@ -240,5 +324,34 @@ async function onTest(): Promise<void> {
   gap: 8px 18px;
   font-size: 12.5px;
   margin-top: 10px;
+}
+
+/* IM 机器人卡内的渠道分区：渠道之间留分隔感，未启用渠道弱化。 */
+.bot-channel {
+  padding: 12px 0;
+  border-top: 1px dashed var(--c-border, #e5e7eb);
+}
+
+.bot-channel:first-of-type {
+  border-top: none;
+  padding-top: 4px;
+}
+
+.bot-channel__name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--c-text-1);
+}
+
+.bot-channel__streamtag {
+  margin-right: 8px;
+}
+
+.bot-channel__disabled {
+  margin-top: 6px;
+}
+
+.bot-channel--off .bot-channel__name {
+  color: var(--c-text-3);
 }
 </style>

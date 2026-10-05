@@ -12,34 +12,38 @@ import (
 	"github.com/codeporter/code-porter/pkg/pool"
 )
 
-// fakeIMRunner 记录流式卡片的创建/更新历史，模拟飞书单卡片实时更新。
+// fakeIMRunner 记录流式卡片的创建/更新历史，模拟平台单条消息实时更新。
 type fakeIMRunner struct {
 	mu            sync.Mutex
 	texts         []string
-	fallbackCards []string                      // SendCard 一次性兜底卡片
+	targets       []port.IMReplyTarget
+	fallbackCards []string                      // SendCard 一次性兜底消息
 	updates       map[string][]port.IMCardState // messageID → 历次渲染状态
 	nextID        int
 }
 
 func (f *fakeIMRunner) Start(context.Context) error { return nil }
 
-func (f *fakeIMRunner) SendText(_ context.Context, _, text string) error {
+func (f *fakeIMRunner) SendText(_ context.Context, target port.IMReplyTarget, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.texts = append(f.texts, text)
+	f.targets = append(f.targets, target)
 	return nil
 }
 
-func (f *fakeIMRunner) SendCard(_ context.Context, _, _, markdown string) error {
+func (f *fakeIMRunner) SendCard(_ context.Context, target port.IMReplyTarget, _, markdown string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fallbackCards = append(f.fallbackCards, markdown)
+	f.targets = append(f.targets, target)
 	return nil
 }
 
-func (f *fakeIMRunner) OpenStreamCard(_ context.Context, _ string, state port.IMCardState) (string, error) {
+func (f *fakeIMRunner) OpenStreamCard(_ context.Context, target port.IMReplyTarget, state port.IMCardState) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.targets = append(f.targets, target)
 	f.nextID++
 	id := "om_card_" + string(rune('0'+f.nextID))
 	if f.updates == nil {
@@ -58,6 +62,14 @@ func (f *fakeIMRunner) UpdateStreamCard(_ context.Context, messageID string, sta
 	f.updates[messageID] = append(f.updates[messageID], state)
 	return nil
 }
+
+// pacerFakeRunner 在 fakeIMRunner 基础上声明平台流式节拍（模拟企微 2s/10min）。
+type pacerFakeRunner struct {
+	fakeIMRunner
+}
+
+func (p *pacerFakeRunner) CardFlushInterval() time.Duration { return 2 * time.Second }
+func (p *pacerFakeRunner) MaxCardLifetime() time.Duration   { return 10 * time.Minute }
 
 func (f *fakeIMRunner) lastState(id string) port.IMCardState {
 	f.mu.Lock()
@@ -109,8 +121,8 @@ func TestIMSeenDeduper(t *testing.T) {
 	}
 }
 
-// TestFeishuBotOnMessageFilters 群聊未 @、空文本、重复事件被忽略。
-func TestFeishuBotOnMessageFilters(t *testing.T) {
+// TestIMBotOnMessageFilters 群聊未 @、空文本、重复事件被忽略。
+func TestIMBotOnMessageFilters(t *testing.T) {
 	runner := &fakeIMRunner{}
 	execRunner := &recordingRunner{model: model.ClaudeCode}
 	exec := NewTaskExecutor(&fakeMCPRegistry{runner: execRunner}, &recordingReporter{}, nopLogger{}, Policy{})
@@ -118,8 +130,8 @@ func TestFeishuBotOnMessageFilters(t *testing.T) {
 	wp.Start(context.Background())
 	defer wp.Stop()
 
-	svc := NewFeishuBotService(runner, exec, wp, FeishuBotConfig{
-		Model: model.ClaudeCode, MentionOnly: true,
+	svc := NewIMBotService(runner, exec, wp, IMBotServiceConfig{
+		Channel: "feishu", Model: model.ClaudeCode, MentionOnly: true,
 	}, Policy{}, nopLogger{})
 
 	if err := svc.OnMessage(context.Background(), port.IMBotMessage{
@@ -132,7 +144,7 @@ func TestFeishuBotOnMessageFilters(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	msg := port.IMBotMessage{EventID: "p1", ChatID: "c", ChatType: port.ChatP2P, Text: "你好"}
+	msg := port.IMBotMessage{EventID: "p1", ChatID: "c", ChatType: port.ChatP2P, Text: "你好", ReplyToken: "req-1"}
 	if err := svc.OnMessage(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
@@ -144,9 +156,19 @@ func TestFeishuBotOnMessageFilters(t *testing.T) {
 	if execRunner.lastReq.Prompt != "你好" {
 		t.Fatalf("executor prompt = %q", execRunner.lastReq.Prompt)
 	}
-	// 每条输入只创建一张卡片（回复 2 次问题的关键保证）。
+	// 每条输入只创建一条流式消息（单消息回复的关键保证）。
 	if len(runner.updates) != 1 {
 		t.Fatalf("exactly one card must be opened per message, got %d", len(runner.updates))
+	}
+	// 平台回调凭证必须原样透传到 runner（企微流式回复依赖它）。
+	var sawToken bool
+	for _, tgt := range runner.targets {
+		if tgt.ReplyToken == "req-1" {
+			sawToken = true
+		}
+	}
+	if !sawToken {
+		t.Fatalf("reply token must be propagated, targets=%+v", runner.targets)
 	}
 	got := runner.lastState(id)
 	if got.Phase != port.IMCardDone || got.Title != "CodePorter" || got.Body != "ok" {
@@ -157,8 +179,8 @@ func TestFeishuBotOnMessageFilters(t *testing.T) {
 	}
 }
 
-// TestFeishuBotStreamingCard 流式片段会推进卡片更新，终态包含完整结果。
-func TestFeishuBotStreamingCard(t *testing.T) {
+// TestIMBotStreamingCard 流式片段会推进卡片更新，终态包含完整结果。
+func TestIMBotStreamingCard(t *testing.T) {
 	runner := &fakeIMRunner{}
 	// recordingRunner 每个任务回 1 个片段 "ok"，至少能看到初始→终态两次更新。
 	execRunner := &recordingRunner{model: model.ClaudeCode}
@@ -167,16 +189,16 @@ func TestFeishuBotStreamingCard(t *testing.T) {
 	wp.Start(context.Background())
 	defer wp.Stop()
 
-	svc := NewFeishuBotService(runner, exec, wp, FeishuBotConfig{
-		Model: model.ClaudeCode, SystemPrompt: "你是代码助手",
+	svc := NewIMBotService(runner, exec, wp, IMBotServiceConfig{
+		Channel: "wecom", Model: model.ClaudeCode, SystemPrompt: "你是代码助手",
 	}, Policy{}, nopLogger{})
 
 	_ = svc.OnMessage(context.Background(), port.IMBotMessage{
-		EventID: "x1", ChatID: "c", ChatType: port.ChatP2P, Text: "解释这个",
+		EventID: "x1", ChatID: "c", ChatType: port.ChatP2P, Text: "解释这个", ReplyToken: "req-x",
 	})
 	id := runner.waitForFinal(t)
 
-	// 卡片建卡即回执：任何情况下都不再发送独立的「处理中」文本。
+	// 建卡即回执：任何情况下都不再发送独立的「处理中」文本。
 	if len(runner.texts) != 0 {
 		t.Fatalf("no standalone ack text expected, got %d: %v", len(runner.texts), runner.texts)
 	}
@@ -190,7 +212,7 @@ func TestFeishuBotStreamingCard(t *testing.T) {
 
 // TestCardStreamPartition 思考/工具过程与正文分流，footer 随阶段切换。
 func TestCardStreamPartition(t *testing.T) {
-	c := newCardStream(&fakeIMRunner{}, "c", "om_test", nopLogger{})
+	c := newCardStream(&fakeIMRunner{}, port.IMReplyTarget{ChatID: "c"}, "om_test", nopLogger{})
 
 	// 初始：思考阶段，面板展开。
 	c.append(port.ChunkThinking, "先分析需求")
@@ -237,7 +259,7 @@ func TestCardStreamPartition(t *testing.T) {
 
 // TestCardStreamFailure 失败态以错误文案收口。
 func TestCardStreamFailure(t *testing.T) {
-	c := newCardStream(&fakeIMRunner{}, "c", "om_test2", nopLogger{})
+	c := newCardStream(&fakeIMRunner{}, port.IMReplyTarget{ChatID: "c"}, "om_test2", nopLogger{})
 	c.append(port.ChunkThinking, "尝试中")
 	c.finishWith(port.IMCardFailed, "❌ boom")
 	st := c.snapshot()
@@ -263,5 +285,16 @@ func TestCardStreamTruncateTail(t *testing.T) {
 	}
 	if r := []rune(got); !strings.HasPrefix(string(r[len(r)-5:]), "xxxxx") {
 		t.Fatal("truncation must keep the tail")
+	}
+}
+
+// TestCardStreamPacerOverride runner 实现 IMBotCardPacer 时采用平台节拍。
+func TestCardStreamPacerOverride(t *testing.T) {
+	c := newCardStream(&pacerFakeRunner{}, port.IMReplyTarget{ChatID: "c"}, "om_p", nopLogger{})
+	if c.flushInterval != 2*time.Second {
+		t.Fatalf("pacer flush interval = %v, want 2s", c.flushInterval)
+	}
+	if c.maxLifetime() != 10*time.Minute {
+		t.Fatalf("pacer lifetime = %v, want 10m", c.maxLifetime())
 	}
 }

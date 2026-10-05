@@ -212,6 +212,92 @@ func (r *Registry) HealthCheckAll(ctx context.Context) []port.AdapterHealth {
 	return results
 }
 
+// WarmupResult 单个适配器的预热结果。
+type WarmupResult struct {
+	Model  model.Model
+	Mode   InvokeMode
+	OK     bool
+	Detail string
+}
+
+// warmer 适配器可选实现的预热能力（Adapter / CLIAdapter 均已实现）。
+type warmer interface {
+	Warmup(ctx context.Context) error
+}
+
+// WarmupEnabled 并发预热全部「已启用」的适配器：
+// MCP 模式拉起常驻子进程并完成握手，CLI 模式做一次免额度的可执行性探测。
+// 未启用的工具直接跳过（不出现在结果里）；单个失败不影响其他工具。
+func (r *Registry) WarmupEnabled(ctx context.Context) []WarmupResult {
+	type target struct {
+		idx int
+		rn  port.MCPRunner
+		cfg AdapterConfig
+	}
+	targets := make([]target, 0, 4)
+	for i, rn := range r.All() {
+		acfg := r.cfg.For(rn.Model())
+		if !acfg.Enabled {
+			continue
+		}
+		targets = append(targets, target{idx: i, rn: rn, cfg: acfg})
+	}
+	results := make([]WarmupResult, len(targets))
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Add(1)
+		go func(idx int, rn port.MCPRunner, acfg AdapterConfig) {
+			defer wg.Done()
+			mode := acfg.Mode
+			if mode == "" {
+				mode = ModeMCP
+			}
+			// 子进程冷启动 + initialize + tools/list 可能较慢，
+			// 在启动超时基础上留出余量；总时限仍受父 ctx 约束。
+			timeout := acfg.StartupTimeout + 15*time.Second
+			if timeout <= 15*time.Second {
+				timeout = 45 * time.Second
+			}
+			warmCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			res := WarmupResult{Model: rn.Model(), Mode: mode, OK: true}
+			w, ok := rn.(warmer)
+			if !ok {
+				res.OK = false
+				res.Detail = "该适配器不支持预热"
+			} else if err := w.Warmup(warmCtx); err != nil {
+				res.OK = false
+				res.Detail = apperr.MessageOf(err)
+			} else {
+				if mode == ModeCLI {
+					res.Detail = "CLI 可执行，已就绪"
+				} else {
+					res.Detail = "MCP Server 已启动并完成握手"
+				}
+			}
+			results[idx] = res
+		}(i, t.rn, t.cfg)
+	}
+	wg.Wait()
+	return results
+}
+
+// runnerState 适配器可选实现的常驻态查询（Adapter 支持；CLIAdapter 恒为 false）。
+type runnerState interface {
+	Running() bool
+}
+
+// RunningModels 返回当前拥有常驻子进程（已拉起并握手）的模型集合。
+func (r *Registry) RunningModels() map[model.Model]bool {
+	out := make(map[model.Model]bool, len(r.order))
+	for _, m := range r.order {
+		if rs, ok := r.runners[m].(runnerState); ok && rs.Running() {
+			out[m] = true
+		}
+	}
+	return out
+}
+
 // Close 释放全部适配器资源。
 func (r *Registry) Close() error {
 	r.mu.Lock()

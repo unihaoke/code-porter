@@ -24,10 +24,6 @@ import (
 	"github.com/codeporter/code-porter/internal/application/port"
 )
 
-// OnMessageFunc 入站消息回调（由应用层的 FeishuBotService 提供）。
-// 返回 error 时 SDK 会让平台按重试策略重推该事件（业务层需自行幂等去重）。
-type OnMessageFunc func(ctx context.Context, msg port.IMBotMessage) error
-
 // feishuBaseURL 飞书国内版开放平台根地址（国际版为 https://open.larksuite.com）。
 const feishuBaseURL = "https://open.feishu.cn"
 
@@ -35,7 +31,7 @@ const feishuBaseURL = "https://open.feishu.cn"
 type Runner struct {
 	appID     string
 	appSecret string
-	onMessage OnMessageFunc
+	onMessage port.IMMessageHandler
 	log       port.Logger
 	http      *http.Client
 
@@ -43,7 +39,7 @@ type Runner struct {
 }
 
 // NewRunner 构造 runner。
-func NewRunner(appID, appSecret string, onMessage OnMessageFunc, log port.Logger) (*Runner, error) {
+func NewRunner(appID, appSecret string, onMessage port.IMMessageHandler, log port.Logger) (*Runner, error) {
 	if strings.TrimSpace(appID) == "" || strings.TrimSpace(appSecret) == "" {
 		return nil, errors.New("feishubot: app_id and app_secret are required")
 	}
@@ -114,18 +110,18 @@ func (r *Runner) dispatch(ev *larkim.P2MessageReceiveV1) error {
 }
 
 // SendText 发送纯文本消息。
-func (r *Runner) SendText(ctx context.Context, chatID, text string) error {
+func (r *Runner) SendText(ctx context.Context, target port.IMReplyTarget, text string) error {
 	content, _ := json.Marshal(map[string]string{"text": text})
-	return r.createMessage(ctx, chatID, larkim.MsgTypeText, string(content), nil)
+	return r.createMessage(ctx, target.ChatID, larkim.MsgTypeText, string(content), nil)
 }
 
 // SendCard 发送交互卡片（标题 + lark_md 正文）。
-func (r *Runner) SendCard(ctx context.Context, chatID, title, markdown string) error {
+func (r *Runner) SendCard(ctx context.Context, target port.IMReplyTarget, title, markdown string) error {
 	raw, err := json.Marshal(cardContent(title, markdown))
 	if err != nil {
 		return err
 	}
-	return r.createMessage(ctx, chatID, larkim.MsgTypeInteractive, string(raw), nil)
+	return r.createMessage(ctx, target.ChatID, larkim.MsgTypeInteractive, string(raw), nil)
 }
 
 func (r *Runner) createMessage(ctx context.Context, chatID, msgType, content string, outMessageID *string) error {
@@ -171,29 +167,25 @@ func cardContent(title, markdown string) map[string]any {
 	}
 }
 
-// CredentialTestResult 凭据测试结果。
-type CredentialTestResult struct {
-	OK             bool   `json:"ok"`
-	TenantKey      string `json:"tenant_key,omitempty"`
-	ExpireSeconds  int    `json:"expire_seconds,omitempty"`
-	Detail         string `json:"detail,omitempty"`
-}
-
 // TestCredentials 不建长连接、不订阅事件，仅用 App ID/Secret 换取一次
 // tenant_access_token，验证凭证是否正确（该接口不依赖任何额外权限点）。
-func (r *Runner) TestCredentials(ctx context.Context) (CredentialTestResult, error) {
+func (r *Runner) TestCredentials(ctx context.Context) (port.IMBotCredentialTest, error) {
 	body, _ := json.Marshal(map[string]string{
 		"app_id": r.appID, "app_secret": r.appSecret,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		feishuBaseURL+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
 	if err != nil {
-		return CredentialTestResult{}, err
+		return port.IMBotCredentialTest{
+			OK: false, Detail: fmt.Sprintf("构造请求失败：%v", err),
+		}, err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return CredentialTestResult{}, fmt.Errorf("请求飞书失败（检查网络/代理）: %w", err)
+		return port.IMBotCredentialTest{
+			OK: false, Detail: fmt.Sprintf("请求飞书失败（检查网络/代理）：%v", err),
+		}, fmt.Errorf("feishubot: token request: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -205,16 +197,22 @@ func (r *Runner) TestCredentials(ctx context.Context) (CredentialTestResult, err
 		TenantKey         string `json:"tenant_key"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return CredentialTestResult{}, fmt.Errorf("解析飞书响应失败: %w", err)
+		return port.IMBotCredentialTest{
+			OK: false, Detail: fmt.Sprintf("解析飞书响应失败：%v", err),
+		}, fmt.Errorf("feishubot: decode token response: %w", err)
 	}
 	if out.Code != 0 || out.TenantAccessToken == "" {
-		return CredentialTestResult{
-			OK: false,
+		return port.IMBotCredentialTest{
+			OK:     false,
 			Detail: fmt.Sprintf("飞书拒绝凭证：code=%d msg=%s（请核对 App ID / App Secret）", out.Code, out.Msg),
 		}, errors.New(out.Msg)
 	}
-	return CredentialTestResult{
-		OK: true, TenantKey: out.TenantKey, ExpireSeconds: out.Expire,
+	extra := map[string]string{}
+	if out.TenantKey != "" {
+		extra["tenant_key"] = out.TenantKey
+	}
+	return port.IMBotCredentialTest{
+		OK: true, ExpireSeconds: out.Expire, Extra: extra,
 		Detail: "凭证有效，已成功获取 tenant_access_token",
 	}, nil
 }
@@ -247,12 +245,12 @@ func convertEvent(ev *larkim.P2MessageReceiveV1) *port.IMBotMessage {
 		senderID = strVal(ev.Event.Sender.SenderId.OpenId)
 	}
 	return &port.IMBotMessage{
-		EventID:  strVal(m.MessageId),
-		ChatID:   strVal(m.ChatId),
-		ChatType: chatType,
-		SenderID: senderID,
-		Text:     stripMentionPlaceholders(text, mentionKeys),
-		RawText:  text,
+		EventID:   strVal(m.MessageId),
+		ChatID:    strVal(m.ChatId),
+		ChatType:  chatType,
+		SenderID:  senderID,
+		Text:      stripMentionPlaceholders(text, mentionKeys),
+		RawText:   text,
 		Mentioned: len(m.Mentions) > 0,
 	}
 }

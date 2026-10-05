@@ -46,7 +46,7 @@ async function submitCreate() {
 }
 
 async function remove(u: UserView) {
-  if (!confirm(`确认删除用户「${u.username}」？\n其秘钥、会话、本地节点与机器人配置会一并删除，且不可恢复。`)) return
+  if (!confirm(`确认删除用户「${u.username}」？\n其秘钥、会话与本地节点会一并删除，且不可恢复。`)) return
   try {
     await usersApi.remove(u.id)
     await load()
@@ -94,7 +94,8 @@ onMounted(load)
     <div v-if="loadError" class="alert error">{{ loadError }}</div>
 
     <div class="card">
-      <table class="table">
+      <div class="table-wrap">
+        <table class="table">
         <thead>
           <tr>
             <th>用户名</th>
@@ -131,6 +132,7 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <div v-if="showCreate" class="modal-mask" @click.self="showCreate = false">
@@ -147,7 +149,7 @@ onMounted(load)
         <div class="field">
           <label>角色</label>
           <select v-model="role">
-            <option value="member">普通用户（管理自己的秘钥/节点/机器人）</option>
+            <option value="member">普通用户（管理自己的秘钥/节点）</option>
             <option value="admin">管理员（可管理用户、查看全局）</option>
           </select>
         </div>

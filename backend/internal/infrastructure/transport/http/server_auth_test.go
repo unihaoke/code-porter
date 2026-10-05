@@ -7,17 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
 	authsvc "github.com/codeporter/code-porter/internal/application/auth"
 	"github.com/codeporter/code-porter/internal/application/gateway"
 	"github.com/codeporter/code-porter/internal/application/port"
-	"github.com/codeporter/code-porter/internal/domain/bot"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	domainuser "github.com/codeporter/code-porter/internal/domain/user"
-	infrabot "github.com/codeporter/code-porter/internal/infrastructure/bot"
 	"github.com/codeporter/code-porter/internal/infrastructure/broker"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
@@ -33,11 +30,6 @@ type httpHarness struct {
 	token string // admin 会话令牌
 }
 
-type fakeHTTPBotSender struct{}
-
-func (fakeHTTPBotSender) Send(context.Context, *bot.Bot, bot.OutboundMessage) error { return nil }
-func (fakeHTTPBotSender) Supports(bot.Channel) bool                                 { return true }
-
 func newHTTPHarness(t *testing.T) *httpHarness {
 	t.Helper()
 	log := logging.New(io.Discard, logging.LevelError)
@@ -52,10 +44,6 @@ func newHTTPHarness(t *testing.T) *httpHarness {
 	queueRepo := memory.NewTaskQueueRepository()
 	eventBroker := broker.NewMemoryBroker()
 	hub := ws.NewHub(ws.HubConfig{PingInterval: 30 * time.Second}, nil, log)
-	botRepo, err := infrabot.NewFileBotRepository(filepath.Join(t.TempDir(), "bots.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	registry := gateway.NewAgentRegistry(agentRepo, queueRepo, clock, log, policy)
 	submit := gateway.NewSubmitTaskUseCase(taskRepo, queueRepo, registry, eventBroker, hub, clock, log, policy)
@@ -63,8 +51,6 @@ func newHTTPHarness(t *testing.T) *httpHarness {
 	pull := gateway.NewPullTasksUseCase(taskRepo, queueRepo, registry, clock, log, policy)
 	ack := gateway.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy)
 	health := gateway.NewReportHealthUseCase(registry, clock, log, policy)
-	bots := gateway.NewBotAdminUseCase(botRepo, registry, clock, log)
-	inbound := gateway.NewBotInboundUseCase(botRepo, submit, fakeHTTPBotSender{}, model.ClaudeCode, clock, log, policy)
 
 	svc := authsvc.NewService(authsvc.Deps{
 		Users:     userRepo,
@@ -97,7 +83,7 @@ func newHTTPHarness(t *testing.T) *httpHarness {
 		Config: cfg, Auth: svc, Registry: registry,
 		Submit: submit, Chat: chat, Pull: pull, Ack: ack, Health: health,
 		Hub: hub, QueueRepo: queueRepo, TaskRepo: taskRepo, Users: userRepo,
-		Bots: bots, BotRepo: botRepo, BotInbound: inbound, Logger: log, Policy: policy,
+		Logger: log, Policy: policy,
 	})
 	ts := httptest.NewServer(srv.httpServer.Handler)
 	t.Cleanup(ts.Close)

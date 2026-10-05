@@ -20,7 +20,6 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/model"
 	"github.com/codeporter/code-porter/internal/domain/user"
-	infrabot "github.com/codeporter/code-porter/internal/infrastructure/bot"
 	"github.com/codeporter/code-porter/internal/infrastructure/broker"
 	"github.com/codeporter/code-porter/internal/infrastructure/config"
 	"github.com/codeporter/code-porter/internal/infrastructure/logging"
@@ -107,14 +106,6 @@ func run(configPath string) error {
 	// 进程内维护（重启后随 Agent 下一次 pull/健康上报重建），不能直接把
 	// MySQL 仓储交给 registry——否则每次读回都是 offline 副本。
 	agentRepo := memory.NewRuntimeAgentRepository(mysqlpersist.NewAgentRepository(db))
-	botMySQLRepo := mysqlpersist.NewBotRepository(db)
-
-	// 旧版 bots.json 一次性迁移到 MySQL（空库才执行，成功后改名 .migrated）。
-	if n, err := mysqlpersist.MigrateBotsJSON(context.Background(), botMySQLRepo, cfg.Bot.StoreFile, user.SeedAdminID); err != nil {
-		log.Warn("bots.json migration failed: " + err.Error())
-	} else if n > 0 {
-		log.Info("bots migrated from legacy bots.json", port.F("count", n))
-	}
 
 	// --- 应用服务（用例编排）---
 	policy := gatewayapp.TaskPolicy{
@@ -147,7 +138,7 @@ func run(configPath string) error {
 	}, log)
 
 	submitUC := gatewayapp.NewSubmitTaskUseCase(taskRepo, queueRepo, registry, eventBroker, hub, clock, log, policy)
-	defaultModel := model.Model(cfg.Bot.DefaultModel)
+	defaultModel := model.Model(cfg.Chat.DefaultModel)
 	chatUC := gatewayapp.NewChatUseCase(submitUC, defaultModel, log)
 
 	authSvc := authsvc.NewService(authsvc.Deps{
@@ -176,11 +167,6 @@ func run(configPath string) error {
 		log.Warn("默认管理员仍在使用默认密码 admin/admin123，请立即登录后在个人菜单修改密码")
 	}
 
-	botAdminUC := gatewayapp.NewBotAdminUseCase(botMySQLRepo, registry, clock, log)
-	botInboundUC := gatewayapp.NewBotInboundUseCase(
-		botMySQLRepo, submitUC, infrabot.NewSender(10*time.Second, log),
-		defaultModel, clock, log, policy)
-
 	lifecycle := gatewayapp.NewTaskLifecycleService(taskRepo, queueRepo, registry, eventBroker, clock, log, policy,
 		gatewayapp.LifecycleConfig{
 			LockSweepInterval:      cfg.Lifecycle.LockSweepInterval,
@@ -196,23 +182,20 @@ func run(configPath string) error {
 	lifecycle.Start(ctx)
 
 	server := gwhttp.NewServer(gwhttp.Deps{
-		Config:     cfg,
-		Auth:       authSvc,
-		Registry:   registry,
-		Submit:     submitUC,
-		Chat:       chatUC,
-		Pull:       pullUC,
-		Ack:        ackUC,
-		Health:     healthUC,
-		Hub:        hub,
-		QueueRepo:  queueRepo,
-		TaskRepo:   taskRepo,
-		Users:      userRepo,
-		Bots:       botAdminUC,
-		BotInbound: botInboundUC,
-		BotRepo:    botMySQLRepo,
-		Logger:     log,
-		Policy:     policy,
+		Config:    cfg,
+		Auth:      authSvc,
+		Registry:  registry,
+		Submit:    submitUC,
+		Chat:      chatUC,
+		Pull:      pullUC,
+		Ack:       ackUC,
+		Health:    healthUC,
+		Hub:       hub,
+		QueueRepo: queueRepo,
+		TaskRepo:  taskRepo,
+		Users:     userRepo,
+		Logger:    log,
+		Policy:    policy,
 	})
 
 	log.Info("codeporter gateway starting",

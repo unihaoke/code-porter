@@ -7,15 +7,12 @@ import (
 
 	"github.com/codeporter/code-porter/internal/domain/agent"
 	"github.com/codeporter/code-porter/internal/domain/apikey"
-	"github.com/codeporter/code-porter/internal/domain/bot"
-	"github.com/codeporter/code-porter/internal/domain/model"
-	"github.com/codeporter/code-porter/internal/domain/task"
 	"github.com/codeporter/code-porter/internal/domain/user"
 	"github.com/codeporter/code-porter/internal/infrastructure/security"
 	"github.com/codeporter/code-porter/internal/testutil"
 )
 
-// TestRepositoriesCRUDAndCascade 在真实 MySQL 上跑一遍五仓储的关键契约与外键级联。
+// TestRepositoriesCRUDAndCascade 在真实 MySQL 上跑一遍四仓储的关键契约与外键级联。
 // 无 CODEPORTER_TEST_MYSQL_DSN 时自动跳过。
 func TestRepositoriesCRUDAndCascade(t *testing.T) {
 	dsn := testutil.RequireMySQL(t)
@@ -34,7 +31,6 @@ func TestRepositoriesCRUDAndCascade(t *testing.T) {
 	keyRepo := NewAPIKeyRepository(pool)
 	sessRepo := NewSessionRepository(pool)
 	agentRepo := NewAgentRepository(pool)
-	botRepo := NewBotRepository(pool)
 
 	// 隔离：每个用例使用独特用户名，结尾统一清理；种子 admin 不动。
 	owner, err := user.NewUser(user.Spec{
@@ -133,21 +129,6 @@ func TestRepositoriesCRUDAndCascade(t *testing.T) {
 		t.Fatalf("foreign owner must not see agent, got %v", err)
 	}
 
-	// --- bots ---
-	b, err := bot.NewBot(bot.Spec{
-		OwnerID: owner.ID(), Name: "t6-bot", Channel: bot.ChannelFeishu, Enabled: true,
-		Model: model.ClaudeCode, Mode: task.ModePull, AgentID: string(ag.ID()),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := botRepo.Save(ctx, b); err != nil {
-		t.Fatalf("save bot: %v", err)
-	}
-	bots, err := botRepo.FindByOwner(ctx, owner.ID())
-	if err != nil || len(bots) != 1 {
-		t.Fatalf("find bots by owner: %v %d", err, len(bots))
-	}
 	// --- cascade ---
 	if err := userRepo.Delete(ctx, owner.ID()); err != nil {
 		t.Fatalf("delete user: %v", err)
@@ -160,9 +141,6 @@ func TestRepositoriesCRUDAndCascade(t *testing.T) {
 	}
 	if _, err := agentRepo.Find(ctx, ag.ID()); err != agent.ErrAgentNotFound {
 		t.Fatalf("agent should cascade-delete, got %v", err)
-	}
-	if left, _ := botRepo.FindByOwner(ctx, owner.ID()); len(left) != 0 {
-		t.Fatalf("bots should cascade-delete, got %d", len(left))
 	}
 }
 

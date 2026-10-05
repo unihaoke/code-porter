@@ -12,20 +12,33 @@ import (
 	"github.com/codeporter/code-porter/pkg/pool"
 )
 
-// cardStream 把 AI 的流式片段实时刷到一张 IM 卡片上。
+// 默认流式节拍（runner 未实现 port.IMBotCardPacer 时使用）。
+const (
+	defaultCardFlushInterval = 700 * time.Millisecond
+	defaultCardLifetime      = 15 * time.Minute
+	// cardBodyMaxRunes 正文区保留的最大字符数，超长截头保尾。
+	cardBodyMaxRunes = 6000
+)
+
+// cardStream 把 AI 的流式片段实时刷到一张 IM 卡片/流式消息上。
 //
 // 分两个区域：
-//   - process（思考链 + 工具调用行）：折叠面板，进行中自动展开、正文开始后折叠；
-//   - body（最终正文）：固定元素，平台按前缀增量做「打字机」逐字渲染。
+//   - process（思考链 + 工具调用行）：飞书侧为折叠面板；企微侧折叠为灰色引用摘要；
+//   - body（最终正文）：飞书按前缀增量打字机渲染；企微整条 Markdown 刷新。
 //
-// 飞书侧用户体验：只收到一张卡片，先看到「🧠 思考中」，随后工具调用逐条出现，
-// 答案以打字机效果增长，结束时面板折叠、头部变绿（失败变红）。
-// 更新做节流并串行化（两次 PATCH 不得交叉，否则卡片版本会错乱）。
+// 用户体验：一条用户消息只对应一条机器人消息，先看到「思考中」，随后工具调用逐条
+// 出现，答案持续增长，结束时过程折叠、状态定型（失败以错误态）。
+// 更新做节流并串行化（同一消息的两次平台写入不得交叉，否则版本会错乱）。
+//
+// 节拍参数来自 runner 的 port.IMBotCardPacer（平台频控/流式寿命不同，
+// 如飞书 700ms、企微 2s/10min），未实现该接口时用内置默认值。
 type cardStream struct {
-	runner    port.IMBotRunner
-	chatID    string
-	messageID string
-	log       port.Logger
+	runner         port.IMBotRunner
+	target         port.IMReplyTarget
+	messageID      string
+	flushInterval  time.Duration
+	maxLifetimeDur time.Duration
+	log            port.Logger
 
 	mu          sync.Mutex
 	process     strings.Builder
@@ -36,7 +49,7 @@ type cardStream struct {
 	phase     port.IMCardPhase
 	dirty     bool
 
-	// flushMu 把所有 PATCH 串行化：ticker 定时刷新与 finish 的最终刷新可能撞车。
+	// flushMu 把所有平台写入串行化：ticker 定时刷新与 finish 的最终刷新可能撞车。
 	flushMu sync.Mutex
 	// finishOnce 防止成功回调与超时兜底罕见地双重收口（重复 close channel 会 panic）。
 	finishOnce sync.Once
@@ -47,23 +60,27 @@ type cardStream struct {
 	done chan struct{}
 }
 
-const (
-	// cardFlushInterval 卡片最小刷新间隔。
-	// streaming_mode 期间全量更新不占常规 QPS 配额（硬限 50 次/秒），
-	// 700ms 兼顾打字流畅度与请求安全边界。
-	cardFlushInterval = 700 * time.Millisecond
-	// cardBodyMaxRunes 正文区保留的最大字符数，超长截头保尾。
-	cardBodyMaxRunes = 6000
-)
-
-func newCardStream(runner port.IMBotRunner, chatID, messageID string, log port.Logger) *cardStream {
+func newCardStream(runner port.IMBotRunner, target port.IMReplyTarget, messageID string, log port.Logger) *cardStream {
+	interval, lifetime := defaultCardFlushInterval, defaultCardLifetime
+	if pacer, ok := runner.(port.IMBotCardPacer); ok {
+		if d := pacer.CardFlushInterval(); d > 0 {
+			interval = d
+		}
+		if d := pacer.MaxCardLifetime(); d > 0 {
+			lifetime = d
+		}
+	}
 	return &cardStream{
-		runner: runner, chatID: chatID, messageID: messageID,
+		runner: runner, target: target, messageID: messageID,
+		flushInterval: interval, maxLifetimeDur: lifetime,
 		log:   log.With(port.F("cmp", "card_stream")),
 		phase: port.IMCardRunning,
 		stop:  make(chan struct{}), done: make(chan struct{}),
 	}
 }
+
+// maxLifetime 返回平台允许的流式消息最大寿命（供服务层裁剪任务等待超时）。
+func (c *cardStream) maxLifetime() time.Duration { return c.maxLifetimeDur }
 
 // start 启动节流刷新循环。
 func (c *cardStream) start() {
@@ -72,7 +89,7 @@ func (c *cardStream) start() {
 	c.mu.Unlock()
 	go func() {
 		defer close(c.done)
-		ticker := time.NewTicker(cardFlushInterval)
+		ticker := time.NewTicker(c.flushInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -165,7 +182,7 @@ func (c *cardStream) flushIfDirty() {
 	c.dirty = false
 	c.mu.Unlock()
 
-	// 串行化：finish 的最终 PATCH 必须排在最后一个 ticker PATCH 之后。
+	// 串行化：finish 的最终写入必须排在最后一个 ticker 写入之后。
 	c.flushMu.Lock()
 	defer c.flushMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -239,7 +256,7 @@ func (r *streamingReporter) ReportSuccess(_ context.Context, _, _, result string
 	r.mu.Lock()
 	r.ok, r.result = true, result
 	r.mu.Unlock()
-	// 终态以完整正文为准（纯正文；思考/工具过程留在折叠面板，不在正文里重复）。
+	// 终态以完整正文为准（纯正文；思考/工具过程留在折叠/摘要区，不在正文里重复）。
 	r.card.finishWith(port.IMCardDone, strings.TrimSpace(result))
 	r.closeOnce.Do(func() { close(r.done) })
 	return nil
@@ -286,48 +303,60 @@ func (d *imSeenDeduper) allow(key string) bool {
 	return true
 }
 
-// FeishuBotConfig 本地飞书机器人服务配置。
-type FeishuBotConfig struct {
-	Model        model.Model
-	MentionOnly  bool
+// IMBotServiceConfig 单个 IM 渠道的本地机器人服务配置（平台无关）。
+type IMBotServiceConfig struct {
+	// Channel 渠道名（feishu/wecom…），仅用于日志与观测。
+	Channel string
+	// Model 处理消息使用的本地 AI 工具。
+	Model model.Model
+	// MentionOnly 群聊中仅响应 @机器人 的消息（私聊不受限）。
+	MentionOnly bool
+	// SystemPrompt 附加在每条消息前的系统提示（可选）。
 	SystemPrompt string
 }
 
-// FeishuBotService 本地飞书机器人：长连接消息 → 本机 AI 执行 → 单卡片实时回复。
+// IMBotService 本地 IM 机器人：平台入站消息 → 本机 AI 执行 → 单条消息实时流式回复。
 //
+// 平台无关：只依赖 port.IMBotRunner 抽象（飞书卡片 / 企微流式消息等由各自 runner 渲染）。
 // 与网关任务链路完全解耦：不鉴权、不入队、不上报，直接复用 TaskExecutor 与本地协程池，
-// 因此即使网关不可达，飞书机器人仍可独立工作。
-type FeishuBotService struct {
+// 因此即使网关不可达，IM 机器人仍可独立工作。
+type IMBotService struct {
+	channel  string
 	runner   port.IMBotRunner
 	executor *TaskExecutor
 	pool     *pool.Pool
 	policy   Policy
-	cfg      FeishuBotConfig
+	cfg      IMBotServiceConfig
 	log      port.Logger
 
 	seen *imSeenDeduper
 }
 
-// NewFeishuBotService 构造服务。
-func NewFeishuBotService(runner port.IMBotRunner, executor *TaskExecutor, workerPool *pool.Pool,
-	cfg FeishuBotConfig, policy Policy, log port.Logger) *FeishuBotService {
-	return &FeishuBotService{
+// NewIMBotService 构造服务。
+func NewIMBotService(runner port.IMBotRunner, executor *TaskExecutor, workerPool *pool.Pool,
+	cfg IMBotServiceConfig, policy Policy, log port.Logger) *IMBotService {
+	channel := cfg.Channel
+	if channel == "" {
+		channel = "im"
+	}
+	return &IMBotService{
+		channel:  channel,
 		runner:   runner,
 		executor: executor,
 		pool:     workerPool,
 		policy:   policy.withDefaults(),
 		cfg:      cfg,
-		log:      log.With(port.F("svc", "feishu_bot")),
+		log:      log.With(port.F("svc", "im_bot"), port.F("channel", channel)),
 		seen:     newIMSeenDeduper(10 * time.Minute),
 	}
 }
 
 // SetRunner 注入运行时（runner 与 service 互为依赖，构造后闭环）。
-func (s *FeishuBotService) SetRunner(runner port.IMBotRunner) { s.runner = runner }
+func (s *IMBotService) SetRunner(runner port.IMBotRunner) { s.runner = runner }
 
-// OnMessage 长连接事件回调。必须快速返回（飞书 3s 限制）：受理判断同步完成，
+// OnMessage 入站事件回调。必须快速返回（平台回调有超时窗口）：受理判断同步完成，
 // 执行与回复放到后台 goroutine；返回 error 会触发平台重投，仅在「应重试」时返回。
-func (s *FeishuBotService) OnMessage(ctx context.Context, msg port.IMBotMessage) error {
+func (s *IMBotService) OnMessage(ctx context.Context, msg port.IMBotMessage) error {
 	if s.cfg.MentionOnly && msg.ChatType == port.ChatGroup && !msg.Mentioned {
 		return nil
 	}
@@ -339,20 +368,21 @@ func (s *FeishuBotService) OnMessage(ctx context.Context, msg port.IMBotMessage)
 			port.F("message_id", msg.EventID), port.F("chat_id", msg.ChatID))
 		return nil
 	}
-	// 复制一份，脱离 SDK 回调的短生命周期 ctx。
+	// 复制一份，脱离平台回调的短生命周期 ctx。
 	go s.handle(msg)
 	return nil
 }
 
-// handle 后台执行单条消息并以「单卡片实时更新」方式回复。
+// handle 后台执行单条消息并以「单条消息实时更新」方式回复。
 //
-// 每条用户消息在群里只会新增 1 条机器人消息（卡片）：卡片建卡即回执
-// （瞬间出现「思考中」状态），随后思考过程与答案都在这张卡片上实时更新，
+// 每条用户消息在会话里只会新增 1 条机器人消息：建卡即回执
+// （瞬间出现「思考中」状态），随后思考过程与答案都在这张卡片/这条流式消息上实时更新，
 // 因此不再发送任何独立的「已收到/处理中」文本。
-func (s *FeishuBotService) handle(msg port.IMBotMessage) {
-	// 先建一张流式「处理中」卡片，后续所有思考/输出都更新它，不再产生新消息。
+func (s *IMBotService) handle(msg port.IMBotMessage) {
+	target := port.IMReplyTarget{ChatID: msg.ChatID, ReplyToken: msg.ReplyToken}
+	// 先建一条流式「处理中」消息，后续所有思考/输出都更新它，不再产生新消息。
 	openCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	messageID, err := s.runner.OpenStreamCard(openCtx, msg.ChatID, port.IMCardState{
+	messageID, err := s.runner.OpenStreamCard(openCtx, target, port.IMCardState{
 		Phase:   port.IMCardRunning,
 		Title:   "CodePorter",
 		Summary: "思考中",
@@ -360,12 +390,12 @@ func (s *FeishuBotService) handle(msg port.IMBotMessage) {
 	})
 	cancel()
 	if err != nil {
-		// 建卡失败（多为发消息权限不足）：无法承载流式输出，退化为一条普通文本错误提示。
+		// 建流失败（多为发消息权限不足/缺少回调凭证）：退化为一条普通 markdown 错误提示。
 		s.log.Error("open streaming card failed", port.F("err", err.Error()))
-		s.sendFallback(msg.ChatID, "⚠️ 机器人无法在该会话发送卡片消息，请检查应用的 im:message 发消息权限。错误："+err.Error())
+		s.sendFallback(target, "⚠️ 机器人无法在该会话发送消息，请检查应用权限与机器人配置。错误："+err.Error())
 		return
 	}
-	card := newCardStream(s.runner, msg.ChatID, messageID, s.log)
+	card := newCardStream(s.runner, target, messageID, s.log)
 	card.start()
 
 	prompt := msg.Text
@@ -398,6 +428,15 @@ func (s *FeishuBotService) handle(msg port.IMBotMessage) {
 	if wait <= 0 || wait > 15*time.Minute {
 		wait = 15 * time.Minute
 	}
+	// 平台流式消息有寿命上限（如企微首帧起 10 分钟内必须 finish）。超时收口的
+	// 终态帧本身还要再花一次写请求（出站写超时 12s），因此等待窗口必须短于
+	// 寿命，而不是「寿命 + 余量」，否则终帧可能越过平台硬限被丢弃。
+	const finishGrace = 20 * time.Second
+	if life := card.maxLifetime(); life > finishGrace {
+		if cap := life - finishGrace; cap < wait {
+			wait = cap
+		}
+	}
 	select {
 	case <-rep.done:
 		// 终态卡片已在 reporter 内完成最终更新。
@@ -407,15 +446,15 @@ func (s *FeishuBotService) handle(msg port.IMBotMessage) {
 }
 
 // cardFail 以错误态收口一张卡片。
-func (s *FeishuBotService) cardFail(card *cardStream, text string) {
+func (s *IMBotService) cardFail(card *cardStream, text string) {
 	card.finishWith(port.IMCardFailed, "❌ "+text)
 }
 
-// sendFallback 发送一次性文本卡片（建卡失败等兜底场景）。
-func (s *FeishuBotService) sendFallback(chatID, content string) {
+// sendFallback 发送一次性 markdown 消息（建流失败等兜底场景）。
+func (s *IMBotService) sendFallback(target port.IMReplyTarget, content string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	if err := s.runner.SendCard(ctx, chatID, "CodePorter", content); err != nil {
+	if err := s.runner.SendCard(ctx, target, "CodePorter", content); err != nil {
 		s.log.Error("fallback reply failed", port.F("err", err.Error()))
 	}
 }

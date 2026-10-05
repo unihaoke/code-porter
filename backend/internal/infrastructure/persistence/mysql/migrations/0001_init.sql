@@ -2,7 +2,7 @@
 --
 -- 约定：
 --   * 所有表 InnoDB + utf8mb4；时间统一 DATETIME(6)（DSN 强制 parseTime=true）。
---   * users 删除时级联清理秘钥/会话/Agent 身份/机器人（ON DELETE CASCADE）。
+--   * users 删除时级联清理秘钥/会话/Agent 身份（ON DELETE CASCADE）。
 --   * 秘钥采用硬删除：api_keys 查不到记录即等同吊销，因此不设 revoked 列。
 --   * 文件末尾以 INSERT IGNORE 种子化首个 admin（admin / admin123），
 --     已改密的环境重复执行迁移不会被覆盖。
@@ -59,29 +59,6 @@ CREATE TABLE IF NOT EXISTS agents (
     PRIMARY KEY (id),
     KEY idx_agents_user (user_id),
     CONSTRAINT fk_agents_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS bots (
-    id            VARCHAR(48)  NOT NULL,
-    user_id       VARCHAR(48)  NOT NULL,
-    name          VARCHAR(128) NOT NULL,
-    channel       VARCHAR(16)  NOT NULL,
-    enabled       TINYINT(1)   NOT NULL DEFAULT 0,
-    model         VARCHAR(32)  NOT NULL DEFAULT '',
-    mode          VARCHAR(16)  NOT NULL DEFAULT '',
-    agent_id      VARCHAR(48)  NOT NULL DEFAULT '',
-    webhook_url   VARCHAR(512) NOT NULL DEFAULT '',
-    secret        VARCHAR(255) NOT NULL DEFAULT '',
-    token         VARCHAR(512) NOT NULL DEFAULT '',
-    aes_key       VARCHAR(64)  NOT NULL DEFAULT '',
-    system_prompt TEXT,
-    mention_only  TINYINT(1)   NOT NULL DEFAULT 0,
-    created_at    DATETIME(6)  NOT NULL,
-    updated_at    DATETIME(6)  NOT NULL,
-    PRIMARY KEY (id),
-    KEY idx_bots_user (user_id),
-    KEY idx_bots_channel (channel),
-    CONSTRAINT fk_bots_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 默认管理员（首次部署种子；INSERT IGNORE 保证改密后重复迁移不覆盖）。

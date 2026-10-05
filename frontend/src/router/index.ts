@@ -13,7 +13,6 @@ const router = createRouter({
         { path: 'chat', name: 'chat', component: () => import('@/views/ChatView.vue') },
         { path: 'keys', name: 'keys', component: () => import('@/views/KeysView.vue') },
         { path: 'users', name: 'users', component: () => import('@/views/UsersView.vue'), meta: { admin: true } },
-        { path: 'bots', name: 'bots', component: () => import('@/views/BotsView.vue') },
         { path: 'agents', name: 'agents', component: () => import('@/views/AgentsView.vue') },
         { path: 'tasks', name: 'tasks', component: () => import('@/views/TasksView.vue') },
       ],

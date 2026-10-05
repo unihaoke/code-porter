@@ -17,7 +17,6 @@ export default defineConfig({
     proxy: {
       '/api': { target: GATEWAY, changeOrigin: true },
       '/v1': { target: GATEWAY, changeOrigin: true },
-      '/webhook': { target: GATEWAY, changeOrigin: true },
       '/healthz': { target: GATEWAY, changeOrigin: true },
     },
   },

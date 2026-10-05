@@ -31,12 +31,12 @@ type GatewayConfig struct {
 	Agent     GatewayAgentConf `yaml:"agent,omitempty"` // 已废弃：仅解析旧字段以打印告警
 	// Web 网页控制台（前端静态资源托管）配置。
 	Web WebConfig `yaml:"web"`
-	// Bot IM 机器人配置。
-	Bot BotConfig `yaml:"bot"`
-	Log LogConfig `yaml:"log"`
+	// Chat 网页控制台对话配置。
+	Chat ChatConfig `yaml:"chat"`
+	Log  LogConfig  `yaml:"log"`
 }
 
-// DatabaseConfig MySQL 配置（users/api_keys/sessions/agents/bots 持久化）。
+// DatabaseConfig MySQL 配置（users/api_keys/sessions/agents 持久化）。
 type DatabaseConfig struct {
 	// DSN 形如 user:pass@tcp(host:3306)/codeporter?parseTime=true&charset=utf8mb4
 	DSN             string        `yaml:"dsn"`
@@ -81,9 +81,6 @@ type ServerConfig struct {
 	IdleTimeout time.Duration `yaml:"idle_timeout"`
 	// ShutdownTimeout 优雅退出超时。
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
-	// PublicAddr 网关对外可访问地址，如 https://cp.example.com。
-	// 仅用于生成机器人回调地址提示，不影响监听行为。
-	PublicAddr string `yaml:"public_addr"`
 }
 
 // SecurityConfig 安全配置。
@@ -104,14 +101,10 @@ type WebConfig struct {
 	StaticDir string `yaml:"static_dir"`
 }
 
-// BotConfig IM 机器人配置。
-type BotConfig struct {
-	// StoreFile 机器人配置持久化文件（JSON）。
-	StoreFile string `yaml:"store_file"`
-	// DefaultModel 机器人未指定模型时使用的本地 AI 工具。
+// ChatConfig 网页控制台对话配置。
+type ChatConfig struct {
+	// DefaultModel 网页对话未指定模型时使用的本地 AI 工具。
 	DefaultModel string `yaml:"default_model"`
-	// ReplyTimeout 等待本地 AI 结果的最长时间。
-	ReplyTimeout time.Duration `yaml:"reply_timeout"`
 }
 
 // TaskConfig 任务策略配置。
@@ -220,10 +213,8 @@ func defaultGatewayConfig() *GatewayConfig {
 		},
 		// Agent 静态引导已移除：实例由客户端持秘钥自注册。
 		Web: WebConfig{Enabled: true, StaticDir: "web/dist"},
-		Bot: BotConfig{
-			StoreFile:    "data/bots.json",
+		Chat: ChatConfig{
 			DefaultModel: string(model.ClaudeCode),
-			ReplyTimeout: 10 * time.Minute,
 		},
 		Log: LogConfig{Level: "info"},
 	}
@@ -251,6 +242,7 @@ type AgentConfig struct {
 // 收到后直接调用本机 MCP/CLI 执行，再通过 OpenAPI 回复——任务不经过网关队列。
 type BotsConfig struct {
 	Feishu FeishuBotConfig `yaml:"feishu"`
+	WeCom  WeComBotConfig  `yaml:"wecom"`
 }
 
 // FeishuBotConfig 飞书企业自建应用机器人配置（仅需 App ID / App Secret）。
@@ -266,6 +258,30 @@ type FeishuBotConfig struct {
 	AppID string `yaml:"app_id"`
 	// AppSecret 应用密钥；建议通过环境变量注入，写入 yaml 时文件权限为 0600。
 	AppSecret string `yaml:"app_secret"`
+	// Model 处理消息使用的本地 AI 工具，空 = claude-code。
+	Model string `yaml:"model"`
+	// MentionOnly 群聊中仅响应 @机器人 的消息（私聊不受限）；默认开启。
+	MentionOnly bool `yaml:"mention_only"`
+	// SystemPrompt 附加在每条消息前的系统提示（可选）。
+	SystemPrompt string `yaml:"system_prompt"`
+}
+
+// WeComBotConfig 企业微信「智能机器人」配置（API 模式，WebSocket 长连接）。
+//
+// 前置条件（企业微信管理后台）：
+//  1. 安全与管理 → 管理工具 → 智能机器人，创建机器人并启用 API 模式；
+//  2. 选择「长连接」接入，复制 Bot ID 与 Secret；
+//  3. 将机器人发布到可见范围，成员可在单聊/群聊中 @ 它。
+//
+// 与飞书渠道互相独立，可同时启用；同一 Bot ID 全平台只允许一条长连接
+// （客户端用锁文件约束同机单实例）。
+type WeComBotConfig struct {
+	// Enabled 是否启用企业微信机器人。
+	Enabled bool `yaml:"enabled"`
+	// BotID 智能机器人 ID；也可用环境变量 WECOM_BOT_ID 注入。
+	BotID string `yaml:"bot_id"`
+	// Secret 机器人密钥；建议通过环境变量 WECOM_BOT_SECRET 注入，写入 yaml 时文件权限 0600。
+	Secret string `yaml:"secret"`
 	// Model 处理消息使用的本地 AI 工具，空 = claude-code。
 	Model string `yaml:"model"`
 	// MentionOnly 群聊中仅响应 @机器人 的消息（私聊不受限）；默认开启。
@@ -406,6 +422,7 @@ func defaultAgentConfig() *AgentConfig {
 		Secrets: SecretsConfig{},
 		Bots: BotsConfig{
 			Feishu: FeishuBotConfig{Enabled: false, MentionOnly: true},
+			WeCom:  WeComBotConfig{Enabled: false, MentionOnly: true},
 		},
 		Log: LogConfig{Level: "info"},
 	}

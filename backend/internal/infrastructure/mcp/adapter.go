@@ -142,6 +142,30 @@ func (a *Adapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (<-c
 	return out, nil
 }
 
+// Warmup 预热适配器：立即拉起 MCP Server 子进程、完成 initialize 握手并拉取
+// 工具列表。用于界面上「启动本地 AI 工具」——首个真实任务到达时无需再等待
+// 子进程冷启动，也能提前暴露未安装 / 未登录 / 握手失败等问题。
+func (a *Adapter) Warmup(ctx context.Context) error {
+	if !a.cfg.Enabled {
+		return apperr.New(apperr.CodeMCPFailure, a.model.String()+" adapter is disabled")
+	}
+	client, err := a.ensureClient(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := a.ensureTool(ctx, client); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Running 报告常驻 MCP Server 子进程是否已经拉起并完成握手。
+func (a *Adapter) Running() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.client != nil
+}
+
 // HealthCheck 探测本地 AI 软件 / MCP Server 是否可用。
 func (a *Adapter) HealthCheck(ctx context.Context) error {
 	if !a.cfg.Enabled {

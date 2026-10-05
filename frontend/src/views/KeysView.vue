@@ -161,7 +161,8 @@ onMounted(load)
     <div v-if="loading" class="muted">加载中…</div>
 
     <div class="card" v-if="!loading">
-      <table class="table">
+      <div class="table-wrap">
+        <table class="table">
         <thead>
           <tr>
             <th>名称</th>
@@ -199,6 +200,7 @@ onMounted(load)
           </tr>
         </tbody>
       </table>
+      </div>
     </div>
 
     <!-- 创建对话框 -->
