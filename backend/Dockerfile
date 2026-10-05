@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" \
 # ---- 2. 构建前端（一并打进镜像，单容器也能访问控制台）----
 # 必须用 glibc 基础镜像（node:22-slim），不能用 node:22-alpine：
 # alpine 的 musl libc 与 vite/esbuild 的 glibc 预编译二进制不兼容，会导致 build 阶段 127。
-FROM node:22-slim AS web-builder
+FROM node:26-slim AS web-builder
 
 WORKDIR /web
 COPY frontend/package.json frontend/package-lock.json ./
