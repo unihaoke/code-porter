@@ -27,13 +27,17 @@ JSON 行协议通信，因此升级界面不会影响任何核心行为。
 build-client.bat
 ```
 
-它会依次完成：环境检查 → 装依赖 → 编译 Go 核心 → 构建界面 → 打包，
+它会依次完成：环境检查 → 装依赖 → （增量）编译 Go 核心 → 构建界面 → 打包，
 产物在 `client\release\`：
 
 | 产物 | 说明 |
 | --- | --- |
 | `CodePorter-<版本>-portable.exe` | **免安装单文件**，双击即用，不写注册表、不需要安装 |
-| `win-unpacked\CodePorter.exe` | 解包版（打包过程中的中间产物），也可直接双击 |
+| `CodePorter-<版本>.zip` | 免安装 exe 打包失败时的回退产物（内容等价的压缩包） |
+
+> 打包过程中的 `win-unpacked\` 是 electron-builder 的**必经中间目录**（先解包组装，
+> 再压缩成单文件 exe / zip），体积约 200MB+，**不是分发物**。portable / zip 成功后
+> 脚本会自动删除它，`release\` 只留下最终的 exe / zip。
 
 默认**不再产出安装版**，因此也不需要下载 NSIS 工具链。偶尔需要安装版时：
 
@@ -42,11 +46,24 @@ cd client
 npx electron-builder --win nsis --x64 --config electron-builder.config.cjs
 ```
 
-单独执行某一步：`build-client.bat deps` / `core` / `app` / `pack`。
+单独执行某一步：
 
-两个可选环境变量：
+| 命令 | 作用 |
+| --- | --- |
+| `build-client.bat deps` | 只装 npm 依赖 |
+| `build-client.bat core` | **强制**重编 Go 核心 |
+| `build-client.bat app` | 只构建 Electron 界面 |
+| `build-client.bat pack` | 只打包（复用已构建产物，不重新编译界面） |
+| `build-client.bat dir` | **最快**：只产出解包目录，不做任何压缩，保留 `win-unpacked\` 供直接双击验证 |
+| `build-client.bat zip` | 解包目录 + zip，跳过最慢的单文件压缩，完成后清理 `win-unpacked\` |
+| `build-client.bat portable` | 只打免安装单文件 exe，失败不回退（CI 用） |
 
-- `SKIP_INSTALLER=1` —— 连免安装 exe 也跳过，直接产出解包目录 + zip
+提速相关：
+
+- **Go 核心增量编译**：完整构建时若没有任何 `.go` 源比现有 `codeporter-core.exe` 新，
+  会自动跳过重编（界面/打包改动不再每次都链接一遍核心）；设 `FORCE_CORE=1` 强制重建。
+- **日常本地验证用 `dir` 档**：省掉单文件 exe 的 7z 高压缩，构建最快。
+- `SKIP_INSTALLER=1` —— 完整构建时连免安装 exe 也跳过，直接产出 zip
   （免安装 exe 打包失败时的自动回退也是这条路）。
 - `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` / `GOPROXY` —— 换镜像源
   （脚本已设国内默认：Electron 用 npmmirror，打包工具链走
@@ -166,6 +183,13 @@ npm start                   # 构建界面并启动 Electron
 AI CLI（Claude Code / Codex…）在**工作目录**里读写文件、执行命令。
 可在「配置 → 本地 AI → 工作目录」点「浏览…」选择，会写回 `mcp.work_dir`；
 留空则使用客户端 exe 所在目录。
+
+## 飞书机器人
+
+在「配置 → 飞书机器人」里启用并填入企业自建应用的 **App ID / App Secret** 即可，
+配置写回 `agent.yaml` 的 `bots.feishu` 节。机器人运行在 Go 核心内，
+通过飞书官方长连接（WebSocket 出站）收发消息，**不需要公网域名、回调地址或加密配置**；
+修改配置后需重启代理生效。平台侧前置条件与排错见根目录 `docs/bot-setup.md`。
 
 ## 环境变量（调试用）
 

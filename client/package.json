@@ -13,7 +13,7 @@
     "dev:renderer": "vite",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
-    "build": "npm run build:main && npm run build:builder && npm run build:renderer",
+    "build": "npm run build:main && npm run build:renderer",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --config electron-builder.config.cjs",
     "dist:dir": "npm run build && electron-builder --dir --config electron-builder.config.cjs",

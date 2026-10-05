@@ -6,10 +6,12 @@
 package feishubot
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -26,12 +28,16 @@ import (
 // 返回 error 时 SDK 会让平台按重试策略重推该事件（业务层需自行幂等去重）。
 type OnMessageFunc func(ctx context.Context, msg port.IMBotMessage) error
 
+// feishuBaseURL 飞书国内版开放平台根地址（国际版为 https://open.larksuite.com）。
+const feishuBaseURL = "https://open.feishu.cn"
+
 // Runner 飞书长连接机器人，实现 port.IMBotRunner。
 type Runner struct {
 	appID     string
 	appSecret string
 	onMessage OnMessageFunc
 	log       port.Logger
+	http      *http.Client
 
 	openAPI *lark.Client // OpenAPI 调用复用一个 client（token 自动刷新）
 }
@@ -49,9 +55,13 @@ func NewRunner(appID, appSecret string, onMessage OnMessageFunc, log port.Logger
 		appSecret: strings.TrimSpace(appSecret),
 		onMessage: onMessage,
 		log:       log.With(port.F("cmp", "feishubot")),
+		http:      &http.Client{Timeout: 15 * time.Second},
 		openAPI:   lark.NewClient(appID, appSecret),
 	}, nil
 }
+
+// AppID 返回应用 ID（日志/状态展示用）。
+func (r *Runner) AppID() string { return r.appID }
 
 // Start 建立长连接并阻塞运行。SDK 负责心跳与日常断线重连；
 // 若 Start 整体退出（如凭据错误），本方法按指数退避重新拉起，直到 ctx 取消。
@@ -93,6 +103,10 @@ func (r *Runner) dispatch(ev *larkim.P2MessageReceiveV1) error {
 	if msg == nil {
 		return nil
 	}
+	r.log.Info("feishu message received",
+		port.F("app_id", r.appID), port.F("message_id", msg.EventID),
+		port.F("chat_type", string(msg.ChatType)), port.F("mentioned", msg.Mentioned),
+		port.F("text_preview", truncate(msg.Text, 40)))
 	// 回调必须在飞书 3s 窗口内返回；应用层受理后自行异步执行。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -102,32 +116,19 @@ func (r *Runner) dispatch(ev *larkim.P2MessageReceiveV1) error {
 // SendText 发送纯文本消息。
 func (r *Runner) SendText(ctx context.Context, chatID, text string) error {
 	content, _ := json.Marshal(map[string]string{"text": text})
-	return r.createMessage(ctx, chatID, larkim.MsgTypeText, string(content))
+	return r.createMessage(ctx, chatID, larkim.MsgTypeText, string(content), nil)
 }
 
 // SendCard 发送交互卡片（标题 + lark_md 正文）。
 func (r *Runner) SendCard(ctx context.Context, chatID, title, markdown string) error {
-	if strings.TrimSpace(title) == "" {
-		title = "CodePorter"
-	}
-	card := map[string]any{
-		"config": map[string]any{"wide_screen_mode": true},
-		"header": map[string]any{
-			"template": "blue",
-			"title":    map[string]any{"tag": "plain_text", "content": title},
-		},
-		"elements": []map[string]any{
-			{"tag": "div", "text": map[string]any{"tag": "lark_md", "content": markdown}},
-		},
-	}
-	raw, err := json.Marshal(card)
+	raw, err := json.Marshal(cardContent(title, markdown))
 	if err != nil {
 		return err
 	}
-	return r.createMessage(ctx, chatID, larkim.MsgTypeInteractive, string(raw))
+	return r.createMessage(ctx, chatID, larkim.MsgTypeInteractive, string(raw), nil)
 }
 
-func (r *Runner) createMessage(ctx context.Context, chatID, msgType, content string) error {
+func (r *Runner) createMessage(ctx context.Context, chatID, msgType, content string, outMessageID *string) error {
 	if strings.TrimSpace(chatID) == "" {
 		return errors.New("feishubot: chat_id is empty")
 	}
@@ -146,7 +147,76 @@ func (r *Runner) createMessage(ctx context.Context, chatID, msgType, content str
 	if !resp.Success() {
 		return fmt.Errorf("feishubot: openapi rejected: code=%d msg=%s", resp.Code, resp.Msg)
 	}
+	if outMessageID != nil && resp.Data != nil && resp.Data.MessageId != nil {
+		*outMessageID = *resp.Data.MessageId
+	}
 	return nil
+}
+
+// cardContent 构造一次性交互卡片 JSON（schema 1.0；仅供 SendCard 兜底通知，
+// 实时流式输出统一走 stream_card.go 的 schema 2.0 卡片）。
+func cardContent(title, markdown string) map[string]any {
+	if strings.TrimSpace(title) == "" {
+		title = "CodePorter"
+	}
+	return map[string]any{
+		"config": map[string]any{"wide_screen_mode": true, "update_multi": true},
+		"header": map[string]any{
+			"template": "blue",
+			"title":    map[string]any{"tag": "plain_text", "content": title},
+		},
+		"elements": []map[string]any{
+			{"tag": "div", "text": map[string]any{"tag": "lark_md", "content": markdown}},
+		},
+	}
+}
+
+// CredentialTestResult 凭据测试结果。
+type CredentialTestResult struct {
+	OK             bool   `json:"ok"`
+	TenantKey      string `json:"tenant_key,omitempty"`
+	ExpireSeconds  int    `json:"expire_seconds,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+}
+
+// TestCredentials 不建长连接、不订阅事件，仅用 App ID/Secret 换取一次
+// tenant_access_token，验证凭证是否正确（该接口不依赖任何额外权限点）。
+func (r *Runner) TestCredentials(ctx context.Context) (CredentialTestResult, error) {
+	body, _ := json.Marshal(map[string]string{
+		"app_id": r.appID, "app_secret": r.appSecret,
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		feishuBaseURL+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(body))
+	if err != nil {
+		return CredentialTestResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := r.http.Do(req)
+	if err != nil {
+		return CredentialTestResult{}, fmt.Errorf("请求飞书失败（检查网络/代理）: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var out struct {
+		Code              int    `json:"code"`
+		Msg               string `json:"msg"`
+		TenantAccessToken string `json:"tenant_access_token"`
+		Expire            int    `json:"expire"`
+		TenantKey         string `json:"tenant_key"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return CredentialTestResult{}, fmt.Errorf("解析飞书响应失败: %w", err)
+	}
+	if out.Code != 0 || out.TenantAccessToken == "" {
+		return CredentialTestResult{
+			OK: false,
+			Detail: fmt.Sprintf("飞书拒绝凭证：code=%d msg=%s（请核对 App ID / App Secret）", out.Code, out.Msg),
+		}, errors.New(out.Msg)
+	}
+	return CredentialTestResult{
+		OK: true, TenantKey: out.TenantKey, ExpireSeconds: out.Expire,
+		Detail: "凭证有效，已成功获取 tenant_access_token",
+	}, nil
 }
 
 // convertEvent SDK v2 消息事件 → 标准消息；非文本返回 nil。
@@ -177,12 +247,12 @@ func convertEvent(ev *larkim.P2MessageReceiveV1) *port.IMBotMessage {
 		senderID = strVal(ev.Event.Sender.SenderId.OpenId)
 	}
 	return &port.IMBotMessage{
-		EventID:   strVal(m.MessageId),
-		ChatID:    strVal(m.ChatId),
-		ChatType:  chatType,
-		SenderID:  senderID,
-		Text:      stripMentionPlaceholders(text, mentionKeys),
-		RawText:   text,
+		EventID:  strVal(m.MessageId),
+		ChatID:   strVal(m.ChatId),
+		ChatType: chatType,
+		SenderID: senderID,
+		Text:     stripMentionPlaceholders(text, mentionKeys),
+		RawText:  text,
 		Mentioned: len(m.Mentions) > 0,
 	}
 }
@@ -232,4 +302,12 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

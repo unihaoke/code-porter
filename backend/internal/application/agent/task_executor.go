@@ -187,8 +187,13 @@ func (e *TaskExecutor) ExecuteWith(ctx context.Context, d port.TaskDispatch, rep
 			continue
 		}
 		seq++
-		sb.WriteString(chunk.Content)
-		pending = append(pending, port.ChunkPayload{Seq: seq, Content: chunk.Content})
+		kind := chunk.Kind
+		// 最终结果只由正文构成：思考过程与工具调用行是给实时卡片看的过程信息，
+		// 不能混进任务结论（否则网关里的任务结果会带上大段思考文本）。
+		if kind.IsBody() {
+			sb.WriteString(chunk.Content)
+		}
+		pending = append(pending, port.ChunkPayload{Seq: seq, Kind: kind, Content: chunk.Content})
 		if len(pending) >= e.policy.ChunkBatchSize || time.Since(lastFlush) >= e.policy.ChunkFlushInterval {
 			flush(false)
 		}

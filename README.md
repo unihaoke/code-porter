@@ -137,23 +137,22 @@ npm start             # 构建界面并启动
 <summary>其他方式（命令行 / 免安装单文件）</summary>
 
 ```bash
-# 方式一：下载预编译单文件客户端（无需 Node）
+# 方式一：下载预编译单文件客户端（无需 Node，控制台程序，以命令行/服务方式运行）
 make release                       # 生成 dist/，含 6 个平台客户端 + 下载页
 
 # 方式二：源码运行（命令行无界面模式）
 make run-agent
 
-# 方式三：本地直接编译单文件 exe（只需 Go 工具链）
+# 方式三：本地交叉编译 Windows 单文件 exe（只需 Go 工具链）
 cd backend
-go build -ldflags "-s -w -H windowsgui" -o codeporter-agent.exe ./cmd/agent
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w -H windowsgui" -o codeporter-agent.exe ./cmd/agent
-# 双击弹原生窗口；或无界面运行：
-codeporter-agent.exe -console -config configs/agent.yaml
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o codeporter-agent.exe ./cmd/agent
+# 无界面运行：
+codeporter-agent.exe -config configs/agent.yaml
 # 本地 AI 连通性自检
 codeporter-agent.exe -test-cli -config configs/agent.yaml
 ```
 
-> 单文件客户端是 walk 原生窗口版（功能完整但界面较简）；需要好看界面用上面的 Electron 版。
+> 单文件客户端是无界面控制台程序，适合服务器/命令行场景；需要图形界面请用上面的 Electron 版。
 > AI 密钥通常**不需要**填写——`mode: cli` 时 Claude Code / Codex 走本机登录态（订阅）。
 
 </details>

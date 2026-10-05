@@ -468,6 +468,82 @@ body {
   font-size: 12px;
 }
 
+/* 多行输入：与单行 input 同一套边框/聚焦风格。 */
+.textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--c-border-strong);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-size: 12.5px;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: vertical;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--c-primary);
+  box-shadow: 0 0 0 3px var(--c-primary-soft);
+}
+
+/* 卡片标题旁的小徽标（启用/未启用等）。 */
+.card__titlewrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 550;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge--on {
+  background: var(--c-ok-soft);
+  color: var(--c-ok);
+  border-color: #bfe6d5;
+}
+
+.badge--off {
+  background: var(--c-surface-3);
+  color: var(--c-text-3);
+  border-color: var(--c-border);
+}
+
+/* 未启用的可选功能卡片整体弱化，提示「展开后才需要配置」。 */
+.card--dim {
+  background: var(--c-surface-2);
+}
+
+/* 卡片内的说明/引导条。 */
+.notice {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: var(--r-sm);
+  background: var(--c-primary-soft);
+  border: 1px solid var(--c-primary-border);
+  color: var(--c-text-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.notice code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--c-surface);
+  font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
 .input-row {
   display: flex;
   gap: 6px;

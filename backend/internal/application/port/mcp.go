@@ -7,14 +7,33 @@ import (
 	"github.com/codeporter/code-porter/internal/domain/task"
 )
 
+// ChunkKind 片段的语义类型，用于把「思考/工具调用过程」与「最终正文」分开。
+type ChunkKind string
+
+const (
+	// ChunkText 正文增量（对用户可见的答案文本）；零值也按正文处理，兼容旧适配器。
+	ChunkText ChunkKind = "text"
+	// ChunkThinking 模型思考过程增量（reasoning），不进入最终结果，仅过程展示。
+	ChunkThinking ChunkKind = "thinking"
+	// ChunkTool 工具调用/工具输出的过程行（如「🔧 Bash(ls -l)」），不进入最终结果。
+	ChunkTool ChunkKind = "tool"
+)
+
 // MCPChunk MCP 适配器输出的流式片段。
 type MCPChunk struct {
 	// Seq 序号，从 1 开始单调递增。
 	Seq int
+	// Kind 片段类型；零值按 ChunkText 处理。
+	Kind ChunkKind
 	// Content 文本增量。
 	Content string
 	// Err 非空表示该流以错误终止，消费者应停止继续读取。
 	Err error
+}
+
+// IsBody 报告该片段是否属于「最终正文」（网关结果 / SSE / 任务结论只拼正文）。
+func (k ChunkKind) IsBody() bool {
+	return k == "" || k == ChunkText
 }
 
 // MCPStreamRequest 交给 MCP 适配器的标准化请求。

@@ -323,9 +323,8 @@ cd backend
 go build -ldflags "-s -w" -o codeporter-agent ./cmd/agent
 
 # 2) 跨平台编译：在任意系统上为 Windows 机器产出 codeporter-agent.exe
-#    Windows 客户端务必加 -H windowsgui，否则双击会额外弹出一个黑色 cmd 窗口。
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-  go build -ldflags "-s -w -H windowsgui" -o codeporter-agent.exe ./cmd/agent
+  go build -ldflags "-s -w" -o codeporter-agent.exe ./cmd/agent
 
 # 3) 运行（把 <path> 换成上一步产出的文件名）
 codeporter-agent -config configs/agent.yaml
@@ -334,34 +333,32 @@ codeporter-agent -config configs/agent.yaml
 要点：
 - 仅需 Go 1.23+，**不需要 make、不需要 Node**；`version` 包在未注入 ldflags 时会回落到内置默认版本号，编译即可运行。
 - `-ldflags "-s -w"` 仅用于裁剪符号表、减小体积，可省略。
-- **`-H windowsgui` 是 Windows 客户端的关键开关**：它把 exe 标记为「GUI 子系统」。若漏掉，Windows 双击时会按「控制台子系统」自动开一个 `cmd` 黑框（这就是你之前看到"客户端+命令行"一起起来的原因）。即便漏加，新版也会在启动时自动调用 `FreeConsole` 关闭该黑框；但加上最稳妥。
+- agent 是**控制台子系统**程序：以命令行 / 系统服务方式运行，或由 Electron 客户端经 `-ipc` 拉起；不要再加 `-H windowsgui`（图形界面已统一由 Electron 客户端提供）。
 - 产出的是静态可执行文件，拷到目标机器直接运行，无需安装运行时。
 - 同样方法可编译网关：`go build -ldflags "-s -w" -o codeporter-gateway ./cmd/gateway`（本地联调用，容器部署仍走 Dockerfile）。
 
-### Windows 原生客户端（可视化填配置）
+### Windows 图形界面：使用 Electron 客户端
 
-在 Windows 上，`codeporter-agent.exe` 是一个 **原生窗口程序**：双击即可弹出配置窗口，无需浏览器、无需 Node。
+图形界面统一由 **Electron 客户端**提供（仓库 `client/` 目录），它把 Go 核心以
+`codeporter-agent -ipc` 方式拉起，在界面里完成配置、启停与日志查看：
 
-> **不会再有黑框**：客户端本身按要求以「GUI 子系统」构建（`-H windowsgui`），即使按控制台构建也会在启动时自动脱离控制台；同时，本地拉起 AI 工具（Trae / Claude Code / CodeBuddy / Codex 等）子进程时已加 `CREATE_NO_WINDOW`，任务运行时也不会再弹出任何命令行窗口。
+| 系统 | 打包命令 | 产物 |
+| --- | --- | --- |
+| Windows | 双击 `build-client.bat`（或 `make client-dist`） | 免安装单文件 `CodePorter-<版本>-portable.exe` |
+| macOS | `bash build-client.sh`（或 `make client-dist-host`） | dmg / zip |
+| Linux | `bash build-client.sh` | AppImage |
 
-**构建（推荐加 `-H windowsgui`，双击不弹黑框）：**
+详见 [client/README.md](../../client/README.md) 与根目录 README 的「在开发机上启动 LocalAgent」。
 
-```bash
-cd backend
-go build -ldflags "-s -w -H windowsgui" -o codeporter-agent.exe ./cmd/agent
+无界面场景（服务器 / 容器 / CI）直接运行控制台程序即可：
+
+```powershell
+codeporter-agent.exe -config configs/agent.yaml
+codeporter-agent.exe -test-cli -config configs/agent.yaml   # 本机 AI 连通性自检
 ```
 
-**使用步骤：**
-
-1. 双击 `codeporter-agent.exe` → 弹出「CodePorter 本地代理」窗口。
-2. 填写：网关地址、**连接秘钥**（控制台「秘钥」页创建，含 agent 权限；实例 ID 自动生成、只读）、Anthropic / OpenAI API Key、并发数与日志级别。
-3. 点「保存并启动」：配置写入同目录 `configs/agent.yaml`（文件权限 0600），并立即开始连接网关拉取任务；窗口下方实时显示运行日志。
-   「停止」用于停止代理，「仅保存配置」只写文件不启动。
-
-AI 密钥仅存于本机 `agent.yaml`（文件权限 0600），并作为 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` 环境变量注入到本地 AI 工具进程。
-
-> 非 Windows，或希望无界面运行（容器 / CI / 后台服务）：加 `-console` 参数，行为与原命令行模式一致。
-> 若不想用窗口，也可直接编辑 `agent.yaml` 的 `gateway` / `agent` / `secrets` 段，再用 `-console` 启动。
+本地拉起 AI 工具（Claude Code / Codex 等）子进程时已加 `CREATE_NO_WINDOW`，
+任务运行时不会弹出额外的命令行窗口。
 
 看到日志出现 `pull` / `connected` 即表示已连上网关，控制台「本地节点」页会显示为在线。
 

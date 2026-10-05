@@ -48,8 +48,11 @@ const (
 
 // ChunkPayload 上报的流式片段。
 type ChunkPayload struct {
-	Seq     int    `json:"seq"`
-	Content string `json:"content"`
+	Seq int `json:"seq"`
+	// Kind 片段类型（text/thinking/tool）；空值按 text 处理。
+	// 网关只把正文（text）累计进任务结果/SSE，思考与工具过程仅供本地 IM 卡片展示。
+	Kind    ChunkKind `json:"kind,omitempty"`
+	Content string    `json:"content"`
 }
 
 // AckRequest Agent → 网关的上报请求。

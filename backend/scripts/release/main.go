@@ -183,13 +183,9 @@ func run(outDir, relVersion, project, build string) error {
 func buildOne(stage, outDir, product, pkg, relVersion, ldflags string, confBody []byte, t target) (artifact, error) {
 	binName := "codeporter-" + product + t.ext
 	binPath := filepath.Join(stage, product+"-"+t.goos+"-"+t.goarch+binName)
-	// Windows 上的 agent 是可双击的桌面客户端，用 GUI 子系统，双击才不会附带黑色
-	// cmd 窗口（控制台子系统程序被 Explorer 启动时会被分配一个控制台）。
-	// 仅对 agent 生效：gateway 是服务端，需保留控制台子系统，否则在终端/Docker
-	// 中会丢失 stdout 日志。
-	if product == "agent" && t.goos == "windows" {
-		ldflags += " -H windowsgui"
-	}
+	// agent 是控制台子系统程序：以命令行/服务方式运行，或由 Electron 客户端
+	// 经 stdio 管道拉起（-ipc）；图形界面统一由 client/ 的 Electron 包提供。
+	// gateway 同为控制台子系统，保证终端/Docker 中 stdout 日志可用。
 	if err := goBuild(pkg, binPath, ldflags, t); err != nil {
 		return artifact{}, err
 	}

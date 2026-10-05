@@ -11,14 +11,6 @@ DIST_DIR   := dist
 GO         ?= go
 WEB_STATIC := $(BACKEND)/web/dist
 
-# Windows GUI 子系统标记。只在 Windows 上追加：-H windowsgui 会让 exe 双击时不弹
-# 黑色控制台窗口，但在 Linux/macOS 上作为链接参数会直接报错，故按 OS 条件注入。
-ifeq ($(OS),Windows_NT)
-WINGUI := -H windowsgui
-else
-WINGUI :=
-endif
-
 .PHONY: help all init build build-backend build-agent-windows build-frontend web test vet fmt \
         release release-agent run-gateway run-agent dev-web \
         client-deps client-core client-app client-dist client-dist-host \
@@ -39,11 +31,11 @@ build: build-backend build-frontend web ## 构建后端与前端，并把前端�
 
 build-backend: ## 构建后端两个二进制到 backend/bin/
 	cd $(BACKEND) && $(GO) build -ldflags "-s -w" -o bin/codeporter-gateway ./cmd/gateway
-	cd $(BACKEND) && $(GO) build -ldflags "-s -w $(WINGUI)" -o bin/codeporter-agent ./cmd/agent
+	cd $(BACKEND) && $(GO) build -ldflags "-s -w" -o bin/codeporter-agent ./cmd/agent
 
-build-agent-windows: ## 构建可双击的 Windows 原生客户端（GUI 子系统，不弹 cmd）
-	cd $(BACKEND) && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -ldflags "-s -w -H windowsgui" -o codeporter-agent.exe ./cmd/agent
-	@echo "已生成 backend/codeporter-agent.exe（双击即弹客户端，无 cmd 黑框）"
+build-agent-windows: ## 交叉编译 Windows 版无界面 Agent（控制台子系统；图形界面请用 Electron 客户端）
+	cd $(BACKEND) && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GO) build -ldflags "-s -w" -o codeporter-agent.exe ./cmd/agent
+	@echo "已生成 backend/codeporter-agent.exe（命令行/服务方式运行；图形界面见 client/ 的 Electron 版）"
 
 build-frontend: ## 构建前端产物
 	cd $(FRONTEND) && npm run build
@@ -74,7 +66,7 @@ run-gateway: ## 启动网关（默认 :9022，同时托管网页控制台）
 	cd $(BACKEND) && $(GO) run ./cmd/gateway -config configs/gateway.yaml
 
 run-agent: ## 启动本地 Agent（无界面命令行模式）
-	cd $(BACKEND) && $(GO) run ./cmd/agent -console -config configs/agent.yaml
+	cd $(BACKEND) && $(GO) run ./cmd/agent -config configs/agent.yaml
 
 dev-web: ## 前端开发服务器（:5173，代理 /api 到本机网关）
 	cd $(FRONTEND) && npm run dev

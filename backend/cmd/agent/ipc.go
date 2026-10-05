@@ -36,6 +36,10 @@ const (
 	actAgentStop  = "agent.stop"
 	actStatus     = "agent.status"
 	actCLITest    = "cli.test"
+	actBotStart   = "bot.start"
+	actBotStop    = "bot.stop"
+	actBotStatus  = "bot.status"
+	actBotTest    = "bot.test"
 	actQuit       = "app.quit"
 )
 
@@ -261,6 +265,67 @@ func (s *ipcServer) dispatch(ctx context.Context, req ipcRequest) {
 			s.respond(req.ID, res, nil)
 		}()
 
+	case actBotStart:
+		// 机器人与代理独立：不要求代理已启动。
+		s.mu.Lock()
+		cur := s.svc
+		s.mu.Unlock()
+		if cur == nil {
+			cur = NewService(s.cfgPath, s.cfg, s.log)
+			cur.SetEventHook(s.onEvent)
+			s.mu.Lock()
+			s.svc = cur
+			s.mu.Unlock()
+		}
+		if err := cur.StartBots(); err != nil {
+			s.respondError(req.ID, "机器人启动失败: "+err.Error())
+			return
+		}
+		s.respond(req.ID, s.statusPayload(), nil)
+
+	case actBotStop:
+		s.mu.Lock()
+		cur := s.svc
+		s.mu.Unlock()
+		if cur == nil || !cur.BotsRunning() {
+			s.respondError(req.ID, "机器人未在运行")
+			return
+		}
+		go func() {
+			cur.StopBots()
+			s.respond(req.ID, s.statusPayload(), nil)
+		}()
+
+	case actBotStatus:
+		s.respond(req.ID, s.statusPayload(), nil)
+
+	case actBotTest:
+		// 纯凭证校验，不启动长连接；直接用最新配置构造临时 runner。
+		var p struct {
+			Channel string `json:"channel"`
+		}
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params, &p)
+		}
+		go func() {
+			s.mu.Lock()
+			cur := s.svc
+			s.mu.Unlock()
+			if cur == nil {
+				cur = NewService(s.cfgPath, s.cfg, s.log)
+				cur.SetEventHook(s.onEvent)
+				s.mu.Lock()
+				s.svc = cur
+				s.mu.Unlock()
+			}
+			res, err := cur.TestBot(p.Channel)
+			if err != nil {
+				s.respondError(req.ID, res.Detail+"（"+err.Error()+"）")
+				return
+			}
+			s.respond(req.ID, res, nil)
+		}()
+
 	default:
 		s.respondError(req.ID, "未知动作: "+req.Action)
 	}
@@ -345,15 +410,10 @@ func (s *ipcServer) statusPayload() map[string]any {
 	svc := s.svc
 	s.mu.Unlock()
 	if cfg == nil {
-		return map[string]any{"running": false}
+		return map[string]any{"running": false, "bots": map[string]any{}}
 	}
 	if svc != nil {
-		st := svc.Status()
-		st["work_dir"] = strings.TrimSpace(cfg.MCP.WorkDir)
-		if st["work_dir"] == "" {
-			st["work_dir"] = defaultClientWorkDir()
-		}
-		return st
+		return svc.Status()
 	}
 	// 尚未启动过：直接基于配置给出静态状态。
 	work := strings.TrimSpace(cfg.MCP.WorkDir)
@@ -368,8 +428,14 @@ func (s *ipcServer) statusPayload() map[string]any {
 			"mode": string(acfg.Mode), "command": acfg.Command,
 		})
 	}
+	fc := cfg.Bots.Feishu
+	botModel := fc.Model
+	if strings.TrimSpace(botModel) == "" {
+		botModel = string(model.ClaudeCode)
+	}
 	return map[string]any{
-		"running": false, "version": "0.2.0",
+		"running": false, "agent_running": false,
+		"version": "0.2.0",
 		"agent_id":   cfg.Agent.ID,
 		"agent_name": cfg.Agent.Name,
 		"has_key":    cfg.Agent.Key != "",
@@ -377,16 +443,25 @@ func (s *ipcServer) statusPayload() map[string]any {
 		"log_level":  cfg.Log.Level, "max_concurrency": cfg.WorkerPool.MaxConcurrency,
 		"queue_size": cfg.WorkerPool.QueueSize, "direct_mode": cfg.Direct.Enabled,
 		"work_dir": work, "config_path": s.cfgPath, "ai_tools": tools,
+		"bots": map[string]any{
+			"feishu": map[string]any{
+				"running": false, "enabled": fc.Enabled,
+				"configured": strings.TrimSpace(fc.AppID) != "" && strings.TrimSpace(fc.AppSecret) != "",
+				"app_id": fc.AppID, "model": botModel,
+				"mention_only": fc.MentionOnly,
+			},
+		},
 	}
 }
 
-// shutdown 优雅停止代理并关闭 done。
+// shutdown 优雅停止代理与机器人并关闭 done。
 func (s *ipcServer) shutdown() {
 	s.once.Do(func() {
 		s.mu.Lock()
 		cur := s.svc
 		s.mu.Unlock()
-		if cur != nil && cur.Running() {
+		if cur != nil {
+			cur.StopBots()
 			cur.Stop()
 		}
 		close(s.done)

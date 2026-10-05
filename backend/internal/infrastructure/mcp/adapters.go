@@ -51,17 +51,36 @@ func applyDefault(cfg AdapterConfig, command string) AdapterConfig {
 // （OAuth / 订阅凭证）。只有在使用 --bare 模式或显式指定第三方 API Key 时才需要。
 // ---------------------------------------------------------------------------
 
-// claudeCLIArgs Claude Code 的 CLI 参数（已实测可用）。
+// claudeCLIArgs Claude Code 的 CLI 参数。
 //
-//	-p                      非交互一次性执行，打印结果后退出
-//	--output-format json    单个 JSON 对象；正文在 result 字段
-//	--permission-mode       无人值守必须放开权限，否则 CLI 会卡在交互确认直到超时
+//	-p                         非交互一次性执行，打印结果后退出
+//	--output-format stream-json 逐事件输出（assistant/user/result），支持真流式
+//	--verbose                  输出完整 content blocks（text/thinking/tool_use/tool_result），
+//	                           不加它拿不到思考过程与工具调用，只剩正文
+//	--permission-mode          无人值守必须放开权限，否则 CLI 会卡在交互确认直到超时
 //
-// 注意：不要加 --verbose。实测 claude 一旦带上 --verbose，即使指定
-// --output-format json 也会改成输出 stream-json 事件数组，形状与 json 不一致。
-// 需要真流式时请显式设 output_format: stream-json（解析器已支持数组）。
+// 解析器（extractCLIEvents）据此把思考/工具过程与正文分流：飞书卡片能实时展示
+// 「思考中/调用工具」折叠过程，网关结果与 SSE 仍然只收正文。
 func claudeCLIArgs() []string {
+	return []string{"-p", "{{prompt}}", "--output-format", "stream-json", "--verbose"}
+}
+
+// legacyClaudeCLIArgs 流式改造前的旧默认参数（json 单次结果模式），用于自动迁移。
+func legacyClaudeCLIArgs() []string {
 	return []string{"-p", "{{prompt}}", "--output-format", "json"}
+}
+
+// equalArgs 比较两个参数模板是否完全一致。
+func equalArgs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // codexCLIArgs Codex 的 CLI 参数。
@@ -102,10 +121,22 @@ func applyCLIDefaults(m model.Model, cfg AdapterConfig) AdapterConfig {
 		if cfg.Command == "" {
 			cfg.Command = "claude"
 		}
+		// 旧版本（json 单次结果模式）落盘的默认参数自动升级到 stream-json --verbose；
+		// 只精确匹配旧默认，用户自定义过的参数原样保留。
+		if equalArgs(cfg.CLI.Args, legacyClaudeCLIArgs()) {
+			cfg.CLI.Args = nil
+			if cfg.CLI.OutputFormat == "json" {
+				cfg.CLI.OutputFormat = ""
+			}
+		}
 		defArgs = claudeCLIArgs()
 		// Claude Code 未登录时用登录态即可，无需密钥；给个宽松的默认模型别名。
 		if cfg.CLI.Model == "" {
 			cfg.CLI.Model = "sonnet"
+		}
+		// 与默认参数保持一致：claude 走真流式，思考/工具过程才能被解析出来。
+		if cfg.CLI.OutputFormat == "" {
+			cfg.CLI.OutputFormat = "stream-json"
 		}
 	case model.Codex:
 		if cfg.Command == "" {

@@ -7,6 +7,18 @@ import (
 	"github.com/codeporter/code-porter/pkg/apperr"
 )
 
+// bodyChunks 只保留正文片段：思考过程/工具调用过程属于本机执行细节，
+// 既不进入网关任务结果，也不应作为正文扇出给 SSE 调用方（同时减少无谓出站流量）。
+func bodyChunks(chunks []port.ChunkPayload) []port.ChunkPayload {
+	out := chunks[:0:0]
+	for _, c := range chunks {
+		if c.Kind.IsBody() {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // ResultReporter 结果上报端口：屏蔽 Pull（HTTP ACK）与 Direct（WebSocket 回推）的差异。
 type ResultReporter interface {
 	// ReportProgress 批量上报流式片段，任务仍在执行。
@@ -30,8 +42,9 @@ func NewHTTPReporter(client port.GatewayClient, agentID string) *HTTPReporter {
 	return &HTTPReporter{client: client, agentID: agentID}
 }
 
-// ReportProgress 上报片段。
+// ReportProgress 上报片段（仅正文；思考/工具过程不出本机）。
 func (r *HTTPReporter) ReportProgress(ctx context.Context, taskID, lockToken string, chunks []port.ChunkPayload) error {
+	chunks = bodyChunks(chunks)
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -87,8 +100,9 @@ func NewDirectReporter(session port.DirectSession, agentID string) *DirectReport
 	return &DirectReporter{session: session, agentID: agentID}
 }
 
-// ReportProgress 上报片段。
+// ReportProgress 上报片段（仅正文；思考/工具过程不出本机）。
 func (r *DirectReporter) ReportProgress(ctx context.Context, taskID, lockToken string, chunks []port.ChunkPayload) error {
+	chunks = bodyChunks(chunks)
 	if len(chunks) == 0 {
 		return nil
 	}

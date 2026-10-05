@@ -14,6 +14,10 @@ export type IpcAction =
   | 'agent.stop'
   | 'agent.status'
   | 'cli.test'
+  | 'bot.start'
+  | 'bot.stop'
+  | 'bot.status'
+  | 'bot.test'
   | 'app.quit'
 
 /** Go 核心推送的事件。 */
@@ -45,9 +49,25 @@ export interface AiToolStatus {
   command: string
 }
 
+/** 单个 IM 机器人的运行/配置状态。 */
+export interface FeishuBotStatus {
+  running: boolean
+  enabled: boolean
+  configured: boolean
+  app_id: string
+  model: string
+  mention_only: boolean
+}
+
+/** 机器人整体状态。 */
+export interface BotsStatus {
+  feishu: FeishuBotStatus
+}
+
 /** 代理运行状态。 */
 export interface AgentStatus {
   running: boolean
+  agent_running?: boolean
   version?: string
   agent_id?: string
   agent_name?: string
@@ -60,6 +80,16 @@ export interface AgentStatus {
   work_dir?: string
   config_path?: string
   ai_tools?: AiToolStatus[]
+  bots?: BotsStatus
+}
+
+/** 机器人「测试连接」结果。 */
+export interface BotTestResult {
+  channel: string
+  ok: boolean
+  detail: string
+  tenant_key?: string
+  expire_seconds?: number
 }
 
 /** AI 工具健康探测结果。 */
@@ -99,6 +129,21 @@ export interface CliTestResult {
   report: string
 }
 
+/** 飞书机器人配置（与 agent.yaml 的 bots.feishu 一致）。 */
+export interface FeishuBotConfig {
+  enabled: boolean
+  app_id: string
+  app_secret: string
+  model: string
+  mention_only: boolean
+  system_prompt: string
+}
+
+/** 本地 IM 机器人配置。 */
+export interface BotsConfig {
+  feishu: FeishuBotConfig
+}
+
 /** 配置对象的通用形状（键名与 agent.yaml 一致）。 */
 export interface AgentConfig {
   agent: { id: string; key: string; name: string }
@@ -114,6 +159,7 @@ export interface AgentConfig {
     health_timeout: string
     [k: string]: unknown
   }
+  bots?: BotsConfig
   secrets: { anthropic_api_key: string; openai_api_key: string }
   log: { level: string }
   [k: string]: unknown
@@ -153,6 +199,12 @@ export interface CodeporterApi {
   stop(): Promise<AgentStatus>
   /** 读取状态。 */
   status(): Promise<AgentStatus>
+  /** 启动 IM 机器人（与代理独立）。 */
+  startBots(): Promise<AgentStatus>
+  /** 停止 IM 机器人。 */
+  stopBots(): Promise<AgentStatus>
+  /** 测试机器人凭证/连通性（不建立长连接）。 */
+  testBot(channel?: string): Promise<BotTestResult>
   /** 测试本地 AI 连通性。 */
   testCli(skipProbe: boolean): Promise<CliTestResult>
   /** 选择目录（原生对话框）。 */

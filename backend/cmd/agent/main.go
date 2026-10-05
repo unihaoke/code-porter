@@ -3,8 +3,12 @@
 // 职责：主动出站连接网关 → 拉取/接收任务 → 本地协程池限流 → 调用本机 MCP AI 工具 → 回传结果。
 // 本机不监听任何端口，外网无法主动访问，安全性由「出站连接」保证。
 //
-// 在 Windows 上双击 codeporter-agent.exe 会弹出原生配置窗口（无需浏览器）；
-// 命令行 / 容器场景可用 -console 以无界面模式运行。
+// 运行模式：
+//   - 默认：无界面守护进程（服务、容器、命令行）；
+//   - -ipc：作为 Electron 图形客户端的 Go 核心，经 stdin/stdout JSON 行协议驱动；
+//   - -test-cli：本机 AI 工具连通性自检。
+//
+// Windows 用户如需图形界面，请使用 Electron 客户端（client/ 目录的发布包）。
 package main
 
 import (
@@ -15,7 +19,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"syscall"
 	"time"
 
@@ -27,10 +30,9 @@ import (
 func main() {
 	configPath := flag.String("config", "configs/agent.yaml", "agent config file path")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	console := flag.Bool("console", false, "run in headless console mode (no GUI); ignored on non-Windows")
 	testCLI := flag.Bool("test-cli", false, "test local AI CLI connectivity and exit")
 	noProbe := flag.Bool("no-probe", false, "with -test-cli: only check installation, do not issue a real call")
-	ipcMode := flag.Bool("ipc", false, "run as an IPC core driven by an Electron/GUI frontend over stdin/stdout JSON lines")
+	ipcMode := flag.Bool("ipc", false, "run as an IPC core driven by the Electron client over stdin/stdout JSON lines")
 	flag.Parse()
 
 	cfgPath := resolveConfigPath(*configPath)
@@ -40,7 +42,7 @@ func main() {
 		return
 	}
 
-	// IPC 模式：供 Electron 等前端驱动。必须在 GUI 分支之前判断。
+	// IPC 模式：供 Electron 图形客户端驱动。必须在其他分支之前判断。
 	if *ipcMode {
 		cfg, err := loadConfig(cfgPath)
 		if err != nil {
@@ -55,20 +57,12 @@ func main() {
 		return
 	}
 
-	// 本地 AI 连通性自检：与 GUI 上的「测试 CLI 连接」是同一套逻辑。
+	// 本地 AI 连通性自检。
 	if *testCLI {
 		os.Exit(runCLITest(cfgPath, *noProbe))
 	}
 
-	// Windows 双击默认弹出原生配置窗口；显式 -console 或非 Windows 走命令行模式。
-	if runtime.GOOS == "windows" && !*console {
-		if err := runGUI(cfgPath); err != nil {
-			fmt.Fprintf(os.Stderr, "gui error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
+	// 默认无界面守护模式。
 	if err := runHeadless(cfgPath); err != nil {
 		fmt.Fprintf(os.Stderr, "agent exited with error: %v\n", err)
 		os.Exit(1)
@@ -99,7 +93,7 @@ func resolveConfigPath(p string) string {
 	return p
 }
 
-// loadConfig 加载配置；文件不存在时回落到默认配置（GUI 将用于创建新文件）。
+// loadConfig 加载配置；文件不存在时回落到默认配置（IPC 客户端会据此引导用户创建新文件）。
 func loadConfig(path string) (*config.AgentConfig, error) {
 	cfg, err := config.LoadAgent(path)
 	if err != nil {
@@ -111,7 +105,8 @@ func loadConfig(path string) (*config.AgentConfig, error) {
 	return cfg, nil
 }
 
-// runHeadless 无界面模式：启动代理并阻塞直到收到终止信号。
+// runHeadless 无界面模式：启动网关代理；配置中启用的 IM 机器人也一并启动。
+// 阻塞直到收到终止信号后优雅停止两者。
 func runHeadless(configPath string) error {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
@@ -122,11 +117,17 @@ func runHeadless(configPath string) error {
 	if err := svc.Start(); err != nil {
 		return err
 	}
+	if cfg.Bots.Feishu.Enabled {
+		if err := svc.StartBots(); err != nil {
+			log.Warn("feishu bot not started: " + err.Error())
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
 	log.Info("shutting down")
+	svc.StopBots()
 	svc.Stop()
 	return nil
 }

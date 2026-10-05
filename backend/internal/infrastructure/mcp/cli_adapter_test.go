@@ -123,8 +123,10 @@ func TestCLIRunEndToEnd(t *testing.T) {
 	if !strings.Contains(got, "部分输出:") {
 		t.Errorf("未收到流式增量, got=%q", got)
 	}
-	if !strings.Contains(got, "最终答案") {
-		t.Errorf("未收到最终 result, got=%q", got)
+	// stream-json 下正文已随 assistant 事件流出，最终 result 是同一份全文，
+	// 不应再重复发一遍（否则任务结果会变成「增量 + 全文」两份）。
+	if strings.Contains(got, "最终答案") {
+		t.Errorf("最终 result 不应在已有流式正文后重复发送, got=%q", got)
 	}
 }
 
@@ -188,8 +190,8 @@ func TestApplyCLIDefaultsClaude(t *testing.T) {
 	if cfg.Command != "claude" {
 		t.Errorf("Command = %q, want claude", cfg.Command)
 	}
-	if cfg.CLI.OutputFormat != "json" {
-		t.Errorf("OutputFormat = %q, want json", cfg.CLI.OutputFormat)
+	if cfg.CLI.OutputFormat != "stream-json" {
+		t.Errorf("OutputFormat = %q, want stream-json", cfg.CLI.OutputFormat)
 	}
 	if cfg.CLI.PermissionMode != "bypassPermissions" {
 		t.Errorf("PermissionMode = %q, want bypassPermissions（无人值守必须放开权限）", cfg.CLI.PermissionMode)
@@ -197,6 +199,121 @@ func TestApplyCLIDefaultsClaude(t *testing.T) {
 	joined := strings.Join(cfg.CLI.Args, " ")
 	if !strings.Contains(joined, "{{prompt}}") {
 		t.Errorf("Args 应含提示词占位符, got %v", cfg.CLI.Args)
+	}
+	if !strings.Contains(joined, "stream-json") || !strings.Contains(joined, "--verbose") {
+		t.Errorf("claude 默认参数应开启 stream-json --verbose 以获取思考/工具流, got %v", cfg.CLI.Args)
+	}
+}
+
+// TestExtractCLIEventsTyped 验证 stream-json --verbose 事件的片段分类：
+// thinking/tool_use/tool_result 进过程区，text 进正文，result 标记为终态。
+func TestExtractCLIEventsTyped(t *testing.T) {
+	toolNames := map[string]string{}
+	ev := func(raw string) map[string]any {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	segs := extractCLIEvents(ev(`{"type":"assistant","message":{"content":[
+		{"type":"thinking","thinking":"我先想想"},
+		{"type":"text","text":"正文一段"},
+		{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"ls -l"}}
+	]}}`), "result", toolNames)
+	if len(segs) != 3 {
+		t.Fatalf("segs = %d, want 3", len(segs))
+	}
+	if segs[0].kind != port.ChunkThinking || segs[0].text != "我先想想" {
+		t.Errorf("thinking seg wrong: %+v", segs[0])
+	}
+	if segs[1].kind != port.ChunkText || segs[1].text != "正文一段" {
+		t.Errorf("text seg wrong: %+v", segs[1])
+	}
+	if segs[2].kind != port.ChunkTool || !strings.Contains(segs[2].text, "🔧 Bash") {
+		t.Errorf("tool_use seg wrong: %+v", segs[2])
+	}
+	if toolNames["tu1"] != "Bash" {
+		t.Errorf("tool id mapping wrong: %v", toolNames)
+	}
+
+	// tool_result 借助累积的 id→name 渲染可读行。
+	resSegs := extractCLIEvents(ev(`{"type":"user","message":{"content":[
+		{"type":"tool_result","tool_use_id":"tu1","is_error":true,"content":"boom"}
+	]}}`), "result", toolNames)
+	if len(resSegs) != 1 || resSegs[0].kind != port.ChunkTool ||
+		!strings.Contains(resSegs[0].text, "Bash") || !strings.Contains(resSegs[0].text, "失败") {
+		t.Errorf("tool_result seg wrong: %+v", resSegs)
+	}
+
+	// 最终 result 事件：正文类且标记 final（由 consume 决定是否去重）。
+	finalSegs := extractCLIEvents(ev(`{"type":"result","result":"全文"}`), "result", toolNames)
+	if len(finalSegs) != 1 || !finalSegs[0].kind.IsBody() || !finalSegs[0].final {
+		t.Errorf("final seg wrong: %+v", finalSegs)
+	}
+}
+
+// TestConsumeFinalDedup 验证 stream-json 终态去重与 json 单对象兜底。
+func TestConsumeFinalDedup(t *testing.T) {
+	collect := func(outputFormat, input string) []port.MCPChunk {
+		a := newTestCLIAdapter(t, CLIConfig{Args: []string{"-p", "x"}, OutputFormat: outputFormat})
+		out := make(chan port.MCPChunk, 16)
+		a.consume(context.Background(), out, strings.NewReader(input))
+		close(out)
+		var got []port.MCPChunk
+		for c := range out {
+			got = append(got, c)
+		}
+		return got
+	}
+
+	// stream-json：先有正文，终态 result 被丢弃，且思考片段正确归类。
+	streamInput :=
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"思考"}]}}` + "\n" +
+			`{"type":"assistant","message":{"content":[{"type":"text","text":"答案"}]}}` + "\n" +
+			`{"type":"result","result":"答案"}` + "\n"
+	got := collect("stream-json", streamInput)
+	if len(got) != 2 {
+		t.Fatalf("stream chunks = %d, want 2（思考+正文，result 去重）: %+v", len(got), got)
+	}
+	if got[0].Kind != port.ChunkThinking || got[1].Kind != port.ChunkText || got[1].Content != "答案" {
+		t.Fatalf("stream chunk kinds wrong: %+v", got)
+	}
+
+	// 纯 json 模式：只有 result 一个对象，必须作为唯一正文发出。
+	got = collect("json", `{"type":"result","result":"唯一答案"}`+"\n")
+	if len(got) != 1 || got[0].Content != "唯一答案" || !got[0].Kind.IsBody() {
+		t.Fatalf("json-only chunks wrong: %+v", got)
+	}
+}
+
+// TestApplyCLIDefaultsClaudeLegacyMigration 旧 json 默认参数自动升级到 stream-json，
+// 用户自定义参数保持不变。
+func TestApplyCLIDefaultsClaudeLegacyMigration(t *testing.T) {
+	// 精确命中旧默认 → 升级。
+	cfg := applyCLIDefaults(model.ClaudeCode, AdapterConfig{
+		Enabled: true,
+		CLI: CLIConfig{
+			Args:         []string{"-p", "{{prompt}}", "--output-format", "json"},
+			OutputFormat: "json",
+		},
+	})
+	joined := strings.Join(cfg.CLI.Args, " ")
+	if !strings.Contains(joined, "stream-json") || strings.Contains(joined, "--output-format json") {
+		t.Fatalf("legacy args should migrate to stream-json, got %v", cfg.CLI.Args)
+	}
+	if cfg.CLI.OutputFormat != "stream-json" {
+		t.Fatalf("OutputFormat should migrate, got %q", cfg.CLI.OutputFormat)
+	}
+
+	// 用户自定义参数（即使含 json）原样保留，不强制迁移。
+	custom := []string{"-p", "{{prompt}}", "--output-format", "json", "--model", "opus"}
+	cfg2 := applyCLIDefaults(model.ClaudeCode, AdapterConfig{
+		Enabled: true, CLI: CLIConfig{Args: custom, OutputFormat: "json"},
+	})
+	if !equalArgs(cfg2.CLI.Args, custom) {
+		t.Fatalf("customized args must be preserved, got %v", cfg2.CLI.Args)
 	}
 }
 

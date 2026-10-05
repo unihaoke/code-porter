@@ -24,25 +24,23 @@ func shellHint(t target, archiveName, binName, confName string) (unpack, run, la
 	return unpack, run, lang
 }
 
-// windowsGUIHint 返回 Windows 客户端的「双击运行」提示；非 Windows 返回空串。
+// windowsGUIHint 返回 Windows 客户端的运行提示；非 Windows 返回空串。
 func windowsGUIHint(t target, binName string) string {
 	if t.goos != "windows" {
 		return ""
 	}
-	return "\n> **Windows 用户：直接双击 `" + binName + "` 即可。**\n" +
-		"> 它是原生窗口客户端（GUI 子系统），双击**不会**弹出黑色命令行窗口；\n" +
-		"> 在窗口里填好网关地址与令牌，点「保存并启动」即可。\n" +
-		"> 需要看实时日志或后台静默运行时，在 PowerShell 里执行：\n" +
-		"> `.\\" + binName + " -console -config configs\\agent.yaml`\n"
+	return "\n> **Windows 用户：** 本程序是控制台程序，请在 PowerShell / CMD 中运行" +
+		"（`.\\" + binName + " -config configs\\agent.yaml`），或注册为后台服务。\n" +
+		"> 需要图形界面请使用 **Electron 客户端**安装包（它在内部以 `-ipc` 方式拉起本核心）。\n"
 }
 
-// verifyHint 返回「验证」步骤的命令。GUI 子系统没有可用的 stdout，
-// 因此 Windows 客户端改用「窗口内日志」来验证，而不是 -version。
+// verifyHint 返回「验证」步骤的命令。
 func verifyHint(t target, binName string) string {
+	cmd := binName + " -version"
 	if t.goos == "windows" {
-		return "双击 `" + binName + "`，在窗口下方的日志区看到 `connected` / `pull` 即表示已连上网关。"
+		return fence("powershell", ".\\"+cmd)
 	}
-	return fence("bash", binName+" -version")
+	return fence("bash", cmd)
 }
 
 func agentReadme(t target, relVersion, binName, archiveName string) string {

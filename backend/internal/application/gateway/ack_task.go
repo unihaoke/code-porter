@@ -113,8 +113,10 @@ func (u *AckTaskUseCase) Execute(ctx context.Context, cmd AckCommand) (*AckResul
 	}
 
 	// 1) 追加流式片段并实时扇出给等待中的调用方。
+	//    防御性过滤非正文片段（思考/工具过程）：正常情况下 Agent 侧 reporter 已剥离，
+	//    这里再兜一次，保证任务结果与 SSE 永远只含正文。
 	for _, c := range cmd.Chunks {
-		if c.Content == "" {
+		if c.Content == "" || !c.Kind.IsBody() {
 			continue
 		}
 		if _, err := t.AppendChunk(c.Content, now); err != nil {

@@ -169,6 +169,12 @@ function registerIpc(): void {
   ipcMain.handle('agent:start', () => need().call<AgentStatus>('agent.start', undefined, 30_000))
   ipcMain.handle('agent:stop', () => need().call<AgentStatus>('agent.stop', undefined, 60_000))
   ipcMain.handle('agent:status', () => need().call<AgentStatus>('agent.status', undefined, 20_000))
+  ipcMain.handle('bot:start', () => need().call<AgentStatus>('bot.start', undefined, 30_000))
+  ipcMain.handle('bot:stop', () => need().call<AgentStatus>('bot.stop', undefined, 60_000))
+  ipcMain.handle('bot:status', () => need().call<AgentStatus>('bot.status', undefined, 20_000))
+  ipcMain.handle('bot:test', (_e, channel?: string) =>
+    need().call<import('../shared/types').BotTestResult>('bot.test', { channel: channel ?? 'feishu' }, 30_000)
+  )
   ipcMain.handle('cli:test', (_e, skipProbe: boolean) =>
     need().call<CliTestResult>('cli.test', { skip_probe: skipProbe }, 6 * 60_000)
   )

@@ -270,8 +270,6 @@ type FeishuBotConfig struct {
 	Model string `yaml:"model"`
 	// MentionOnly 群聊中仅响应 @机器人 的消息（私聊不受限）；默认开启。
 	MentionOnly bool `yaml:"mention_only"`
-	// Ack 是否先回复一条「已收到，处理中」（长任务体验）；默认开启。
-	Ack bool `yaml:"ack"`
 	// SystemPrompt 附加在每条消息前的系统提示（可选）。
 	SystemPrompt string `yaml:"system_prompt"`
 }
@@ -407,7 +405,7 @@ func defaultAgentConfig() *AgentConfig {
 		},
 		Secrets: SecretsConfig{},
 		Bots: BotsConfig{
-			Feishu: FeishuBotConfig{Enabled: false, MentionOnly: true, Ack: true},
+			Feishu: FeishuBotConfig{Enabled: false, MentionOnly: true},
 		},
 		Log: LogConfig{Level: "info"},
 	}

@@ -1,6 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { AgentConfig, AgentStatus, CliTestResult, CoreEventName, CodeporterApi } from '../shared/types'
+import type {
+  AgentConfig,
+  AgentStatus,
+  BotTestResult,
+  CliTestResult,
+  CoreEventName,
+  CodeporterApi
+} from '../shared/types'
 
 /**
  * 暴露给渲染进程的安全 API。
@@ -21,6 +28,10 @@ const api: CodeporterApi = {
   start: () => ipcRenderer.invoke('agent:start') as Promise<AgentStatus>,
   stop: () => ipcRenderer.invoke('agent:stop') as Promise<AgentStatus>,
   status: () => ipcRenderer.invoke('agent:status') as Promise<AgentStatus>,
+  startBots: () => ipcRenderer.invoke('bot:start') as Promise<AgentStatus>,
+  stopBots: () => ipcRenderer.invoke('bot:stop') as Promise<AgentStatus>,
+  testBot: (channel?: string) =>
+    ipcRenderer.invoke('bot:test', channel) as Promise<BotTestResult>,
   testCli: (skipProbe: boolean) => ipcRenderer.invoke('cli:test', skipProbe) as Promise<CliTestResult>,
   pickDirectory: (title: string) => ipcRenderer.invoke('dialog:pickDirectory', title) as Promise<string | null>,
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url) as Promise<void>,

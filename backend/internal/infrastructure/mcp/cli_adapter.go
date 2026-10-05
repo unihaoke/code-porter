@@ -345,8 +345,10 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdout io.Reader) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 128*1024), 8*1024*1024)
-	// 记录是否已产出正文，用于在「无正文但有输出」时兜底。
-	emitted := 0
+	// segCount 总产出片段数（含思考/工具），bodyCount 仅正文，用于终态去重与空输出兜底。
+	segCount, bodyCount := 0, 0
+	// tool_use_id → 工具名，跨事件累积，让 tool_result 能显示具体工具名。
+	toolNames := make(map[string]string)
 	for sc.Scan() {
 		line := sc.Text()
 		trimmed := strings.TrimSpace(line)
@@ -357,25 +359,33 @@ func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdo
 		if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
 			if a.cli.OutputFormat == "text" {
 				emit(ctx, out, port.MCPChunk{Content: line})
-				emitted++
+				segCount, bodyCount = segCount+1, bodyCount+1
 			}
 			continue
 		}
 		// 一行可能是单个 JSON 对象（--output-format json），
 		// 也可能是事件数组（stream-json / 带 --verbose 时）——两种都要能解析。
 		for _, ev := range parseJSONLine(trimmed) {
-			for _, text := range extractCLIText(ev, a.cli.ResultPath) {
-				if text == "" {
+			for _, seg := range extractCLIEvents(ev, a.cli.ResultPath, toolNames) {
+				if seg.text == "" {
 					continue
 				}
-				emit(ctx, out, port.MCPChunk{Content: text})
-				emitted++
+				// stream-json 下正文已随 assistant 事件流出，最终 result 是同一份全文，
+				// 再发一遍会让结果重复；纯 json 模式（此前无正文）则以 result 为唯一正文。
+				if seg.final && bodyCount > 0 {
+					continue
+				}
+				emit(ctx, out, port.MCPChunk{Kind: seg.kind, Content: seg.text})
+				segCount++
+				if seg.kind.IsBody() {
+					bodyCount++
+				}
 			}
 		}
 	}
-	// 兜底：CLI 确实产出了内容但我们没解析出正文时，原样回吐，
+	// 兜底：CLI 确实产出了内容但我们一条片段都没解析出来时，原样回吐最后一行，
 	// 避免用户看到"明明有输出却一片空白"。
-	if emitted == 0 {
+	if segCount == 0 {
 		if raw := strings.TrimSpace(sc.Text()); raw != "" {
 			emit(ctx, out, port.MCPChunk{Content: raw})
 		}
@@ -406,15 +416,29 @@ func parseJSONLine(line string) []map[string]any {
 	return nil
 }
 
-// extractCLIText 从一条 JSON 事件中提取可展示文本。
-func extractCLIText(ev map[string]any, resultPath string) []string {
-	var texts []string
-	// claude/codex 的最终结果：{"type":"result","result":"..."}
+// cliSeg 从一条 JSON 事件中解析出的展示片段。
+type cliSeg struct {
+	kind  port.ChunkKind
+	text  string
+	final bool // 来自最终 result 事件：若过程中已流出正文，则丢弃以免重复
+}
+
+// extractCLIEvents 从一条 JSON 事件中提取带类型的片段（正文 / 思考 / 工具过程）。
+//
+// 兼容 claude code `--output-format stream-json --verbose` 的事件：
+//   - {"type":"assistant","message":{"content":[{"type":"text"|"thinking"|"tool_use",...}]}}
+//   - {"type":"user","message":{"content":[{"type":"tool_result",...}]}}
+//   - {"type":"result","result":"..."}（json 单对象模式的唯一正文，或 stream-json 的终态）
+//
+// toolNames 在多次调用间累积 tool_use_id → 工具名，供 tool_result 渲染可读行。
+func extractCLIEvents(ev map[string]any, resultPath string, toolNames map[string]string) []cliSeg {
+	var segs []cliSeg
+	// 最终结果事件（claude/codex 的 {"type":"result","result":"..."}）。
 	if t := lookupPath(ev, resultPath); t != "" {
-		texts = append(texts, t)
-		return texts
+		segs = append(segs, cliSeg{kind: port.ChunkText, text: t, final: ev["type"] == "result"})
+		return segs
 	}
-	// 流式增量：{"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+	// 流式消息：assistant（text/thinking/tool_use）或 user（tool_result）。
 	if msg, ok := ev["message"].(map[string]any); ok {
 		if content, ok := msg["content"].([]any); ok {
 			for _, c := range content {
@@ -422,21 +446,79 @@ func extractCLIText(ev map[string]any, resultPath string) []string {
 				if !ok {
 					continue
 				}
-				if s, ok := cm["text"].(string); ok && s != "" {
-					texts = append(texts, s)
+				switch cm["type"] {
+				case "text":
+					if s, ok := cm["text"].(string); ok && s != "" {
+						segs = append(segs, cliSeg{kind: port.ChunkText, text: s})
+					}
+				case "thinking":
+					if s, ok := cm["thinking"].(string); ok && s != "" {
+						segs = append(segs, cliSeg{kind: port.ChunkThinking, text: s})
+					}
+				case "tool_use":
+					id, _ := cm["id"].(string)
+					name, _ := cm["name"].(string)
+					if name != "" {
+						if id != "" && toolNames != nil {
+							toolNames[id] = name
+						}
+						segs = append(segs, cliSeg{kind: port.ChunkTool, text: toolUseLine(name, cm["input"])})
+					}
+				case "tool_result":
+					id, _ := cm["tool_use_id"].(string)
+					name := toolNames[id]
+					if name == "" {
+						name = "工具"
+					}
+					isErr, _ := cm["is_error"].(bool)
+					mark, tail := "✅", "完成"
+					if isErr {
+						mark, tail = "❌", "失败"
+					}
+					segs = append(segs, cliSeg{kind: port.ChunkTool, text: mark + " " + name + " 执行" + tail})
 				}
 			}
 		}
 	}
-	// 通用增量字段。
+	if len(segs) > 0 {
+		return segs
+	}
+	// 通用增量字段（其他 CLI 的兼容兜底，统一按正文处理）。
 	for _, k := range []string{"delta", "text", "content", "output_text"} {
 		if m, ok := ev[k].(map[string]any); ok {
 			if s, ok := m["text"].(string); ok && s != "" {
-				texts = append(texts, s)
+				segs = append(segs, cliSeg{kind: port.ChunkText, text: s})
 			}
 		}
 		if s, ok := ev[k].(string); ok && s != "" && k != "content" {
-			texts = append(texts, s)
+			segs = append(segs, cliSeg{kind: port.ChunkText, text: s})
+		}
+	}
+	return segs
+}
+
+// toolUseLine 生成工具调用的单行摘要：🔧 Read {"file_path":"..."}（参数截断）。
+func toolUseLine(name string, input any) string {
+	line := "🔧 " + name
+	if input != nil {
+		raw, err := json.Marshal(input)
+		if err == nil && len(raw) > 2 {
+			s := string(raw)
+			if r := []rune(s); len(r) > 120 {
+				s = string(r[:120]) + "…"
+			}
+			line += " " + s
+		}
+	}
+	return line
+}
+
+// extractCLIText 兼容旧调用/测试：只返回正文类文本（思考与工具过程不计入）。
+func extractCLIText(ev map[string]any, resultPath string) []string {
+	var texts []string
+	for _, seg := range extractCLIEvents(ev, resultPath, nil) {
+		if seg.kind.IsBody() {
+			texts = append(texts, seg.text)
 		}
 	}
 	return texts

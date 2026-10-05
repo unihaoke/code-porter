@@ -18,7 +18,7 @@ make init          # go mod tidy + npm install
 # 后端
 make build-backend       # 编译 gateway 与 agent 到 backend/bin/
 make run-gateway         # 运行网关（:9022，同时托管控制台）
-make run-agent           # 运行本地 Agent（无界面命令行模式，等价于 -console）
+make run-agent           # 运行本地 Agent（无界面命令行模式）
 make test                # go test ./...
 make vet fmt             # 静态检查 + 格式化
 

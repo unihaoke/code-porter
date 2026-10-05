@@ -11,10 +11,18 @@ REM  Steps:  build Go core, build Electron UI, package exe
 REM  ("->" is avoided on purpose: cmd would read ">" as a redirection.)
 REM
 REM  Run a single stage:
-REM    build-client.bat deps     install npm dependencies only
-REM    build-client.bat core     build the Go core only
-REM    build-client.bat app      build the Electron app only
-REM    build-client.bat pack     package only (no recompile)
+REM    build-client.bat deps      install npm dependencies only
+REM    build-client.bat core      force-build the Go core only
+REM    build-client.bat app       build the Electron app only
+REM    build-client.bat pack      full package only (portable exe, no UI recompile)
+REM    build-client.bat dir       fastest: unpacked folder only, no compression
+REM    build-client.bat zip       unpacked folder + zip, skip portable compression
+REM    build-client.bat portable  portable exe only, fail instead of falling back
+REM
+REM  Speed knobs (environment):
+REM    FORCE_CORE=1   force a Go rebuild even if sources are older than the binary
+REM                   (default full build already does incremental core builds)
+REM    SKIP_INSTALLER=1  full build emits folder + zip instead of the portable exe
 REM
 REM  NOTE: this file is intentionally pure ASCII. A .bat file is parsed with
 REM  the system ANSI code page (GBK on Chinese Windows); non-ASCII characters
@@ -71,12 +79,15 @@ if not exist "%CLIENT%\node_modules\electron\dist\electron.exe" (
 REM ---------- 3. Go core ----------
 :core
 echo [3/5] Building Go core...
-REM Remove any previous output first. A truncated/partial file (e.g. left by an
-REM interrupted build) makes the linker fail with the confusing
-REM "build output already exists and is not an object file".
-if exist "%ROOT%backend\bin\codeporter-core.exe" del /f /q "%ROOT%backend\bin\codeporter-core.exe"
-pushd "%ROOT%backend"
-call go build -trimpath -ldflags "-s -w" -o bin\codeporter-core.exe ./cmd/agent
+REM Build through the Node helper so we get an incremental skip for free: when no
+REM .go source is newer than the existing binary it reuses it instead of linking
+REM again. "core" stage or FORCE_CORE=1 forces a clean rebuild. The helper also
+REM deletes a stale/truncated binary before a real build.
+set "CORE_ARGS=--skip-if-fresh"
+if /i "%STEP%"=="core" set "CORE_ARGS="
+if defined FORCE_CORE if not "%FORCE_CORE%"=="0" set "CORE_ARGS="
+pushd "%CLIENT%"
+call node scripts\build-core.mjs %CORE_ARGS% < nul
 if errorlevel 1 (popd & echo [ERROR] Go core build failed. & goto :fail)
 popd
 REM Endpoint security (EDR/AV) can quarantine the freshly built exe and leave a
@@ -101,7 +112,11 @@ REM 9/26-byte "core" that failed to start).
 echo       core: backend\bin\codeporter-core.exe ^(%CORESIZE% bytes^)
 
 if "%STEP%"=="core" goto :ok
-if "%STEP%"=="pack" goto :packdir
+REM Pack-only stages reuse the already-built UI and jump straight to packaging.
+if "%STEP%"=="pack"     goto :package
+if "%STEP%"=="dir"      goto :packdironly
+if "%STEP%"=="zip"      goto :packzip
+if "%STEP%"=="portable" goto :packportable
 
 REM ---------- 4. Electron app ----------
 :app
@@ -114,50 +129,55 @@ popd
 if "%STEP%"=="app" goto :ok
 
 REM ---------- 5. package ----------
+:package
 REM Default output is the portable exe: one file, no installer, no registry.
-REM If it fails for any reason we still emit a directory build plus a zip, so
-REM the user always ends up with something that runs.
-if "%SKIP_INSTALLER%"=="1" goto :packdir
+REM SKIP_INSTALLER=1 skips the heavy single-file compression and emits only the
+REM unpacked folder + zip.
+REM If the portable build fails for any reason we still emit a directory build
+REM plus a zip, so the user always ends up with something that runs.
+if "%SKIP_INSTALLER%"=="1" goto :packzip
 
-REM electron-builder downloads artifacts with a Go binary that honours
-REM HTTP_PROXY/HTTPS_PROXY. A malformed value ("http://", ":0", ...) makes every
-REM download die with "proxyconnect tcp: dial tcp :0", so drop such values first.
-for %%V in (HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy) do call :checkproxy %%V
-
-REM Same trap from npm config: old npm versions leave proxy=null and
-REM https-proxy=null in ~/.npmrc, and electron-builder passes "null" to the
-REM downloader as if it were a real proxy - again "dial tcp :0".
-REM Two gotchas: it must be "call npm" (npm.cmd ends with a goto that kills the
-REM calling batch file otherwise), and npm must not run inside for /f.
-REM npm writes a lone LF line ending, which findstr /x cannot match, so use a
-REM substring match instead.
-call npm config get proxy > "%TEMP%\cp-npm-proxy.txt" 2>nul
-findstr /c:"null" "%TEMP%\cp-npm-proxy.txt" >nul && call npm config delete proxy
-call npm config get https-proxy > "%TEMP%\cp-npm-proxy.txt" 2>nul
-findstr /c:"null" "%TEMP%\cp-npm-proxy.txt" >nul && call npm config delete https-proxy
-del /q "%TEMP%\cp-npm-proxy.txt" 2>nul
-
+:packportable
+call :sanitizeproxy
 echo [5/5] Packaging portable exe ^(single file, no installer^)...
 pushd "%CLIENT%"
-call npx electron-builder --win --x64 --config electron-builder.config.cjs < nul
+call npx electron-builder --win portable --x64 --config electron-builder.config.cjs < nul
+set "RC=%ERRORLEVEL%"
 popd
-if not errorlevel 1 goto :packok
+if "%RC%"=="0" goto portableok
+if "%STEP%"=="portable" (echo [ERROR] Portable build failed. & goto :fail)
+echo.
+echo [WARN] Portable build failed. Falling back to directory build + zip.
+echo.
+goto :packzip
+:portableok
+REM Portable exe is self-contained; the unpacked folder was only an intermediate.
+call :cleanunpacked
+goto :packok
 
-echo.
-echo [WARN] Portable build failed. Falling back to a directory build - still a
-echo [WARN] runnable .exe.
-echo.
-:packdir
+:packzip
+call :sanitizeproxy
 echo [5/5] Packaging directory build + zip...
 pushd "%CLIENT%"
 call npx electron-builder --dir --win --x64 --config electron-builder.config.cjs < nul
-if errorlevel 1 (popd & echo [ERROR] Directory build failed too. & goto :fail)
+if errorlevel 1 (popd & echo [ERROR] Directory build failed. & goto :fail)
 call npx electron-builder --win zip --x64 --config electron-builder.config.cjs < nul
+set "RC=%ERRORLEVEL%"
 popd
-echo.
-echo NOTE: the portable exe was skipped. Set SKIP_INSTALLER=1 to use this mode
-echo       directly. The folder build above runs too - just keep the whole
-echo       win-unpacked directory together.
+if not "%RC%"=="0" (echo [ERROR] Zip build failed. & goto :fail)
+REM The zip already contains the whole app; drop the redundant 200MB+ folder.
+call :cleanunpacked
+goto :packok
+
+:packdironly
+call :sanitizeproxy
+echo [5/5] Packaging unpacked directory only ^(fastest, no compression^)...
+pushd "%CLIENT%"
+call npx electron-builder --dir --win --x64 --config electron-builder.config.cjs < nul
+popd
+if errorlevel 1 (echo [ERROR] Directory build failed. & goto :fail)
+REM Intentionally keep win-unpacked here: that folder IS the deliverable for
+REM this stage; run CodePorter.exe inside it directly.
 goto :packok
 
 :packok
@@ -205,6 +225,22 @@ REM Only pause when double-clicked; a pause would hang scripted/CI invocations.
 if "%STEP%"=="" pause
 exit /b 1
 
+:sanitizeproxy
+REM Strip unusable proxy config before electron-builder downloads artifacts.
+REM electron-builder's downloader honours HTTP_PROXY/HTTPS_PROXY; a malformed
+REM value ("http://", ":0", ...) makes every download die with
+REM "proxyconnect tcp: dial tcp :0". Same trap from npm config: old npm versions
+REM leave proxy=null in ~/.npmrc and electron-builder treats "null" as a real
+REM proxy. Must be "call npm" (npm.cmd ends with a goto that kills the calling
+REM batch otherwise) and npm must not run inside for /f.
+for %%V in (HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy) do call :checkproxy %%V
+call npm config get proxy > "%TEMP%\cp-npm-proxy.txt" 2>nul
+findstr /c:"null" "%TEMP%\cp-npm-proxy.txt" >nul && call npm config delete proxy
+call npm config get https-proxy > "%TEMP%\cp-npm-proxy.txt" 2>nul
+findstr /c:"null" "%TEMP%\cp-npm-proxy.txt" >nul && call npm config delete https-proxy
+del /q "%TEMP%\cp-npm-proxy.txt" 2>nul
+goto :eof
+
 :checkproxy
 REM %1=proxy variable name. Clears it when the value is not a usable
 REM "scheme://host:port" URL. Keeps the build working on machines that export a
@@ -218,6 +254,17 @@ echo.%PVAL%| findstr /i /r /c:"://[0-9a-z._-]*[0-9a-z]:[1-9][0-9]*" >nul
 if not errorlevel 1 goto :eof
 echo [WARN] %PVAR%="%PVAL%" is not a usable proxy URL - ignoring it for packaging.
 set "%PVAR%="
+goto :eof
+
+:cleanunpacked
+REM win-unpacked is a mandatory intermediate electron-builder assembles before
+REM compressing the portable exe / zip. It is 200MB+ and is not a deliverable
+REM once a self-contained exe or zip exists, so remove it on those stages to save
+REM disk and keep release\ clean. The "dir" stage keeps it on purpose.
+if exist "%CLIENT%\release\win-unpacked" (
+  echo       Cleaning intermediate win-unpacked folder...
+  rmdir /s /q "%CLIENT%\release\win-unpacked"
+)
 goto :eof
 
 :checkpackedcore
