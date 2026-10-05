@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---- 1. 构建网关二进制 ----
-FROM golang:1.23-alpine AS gateway-builder
+FROM golang:1.27-alpine AS gateway-builder
 
 WORKDIR /src
 COPY backend/go.mod backend/go.sum ./
