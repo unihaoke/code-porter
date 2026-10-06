@@ -8,6 +8,96 @@ import (
 	"github.com/codeporter/code-porter/internal/application/port"
 )
 
+// TestSanitizeFontTags 模型自带的各种 <font> 变体都不能原文泄漏。
+func TestSanitizeFontTags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string // 必须包含
+		bad  string // 必须不包含
+	}{
+		{
+			name: "等号两侧带空格+单引号（线上事故原样）",
+			in:   `<font color = 'comment'>过程摘要：分析完毕</font>正文`,
+			want: `<font color="comment">过程摘要：分析完毕</font>正文`,
+			bad:  "color =",
+		},
+		{
+			name: "双引号无空格已是规范写法",
+			in:   `<font color="warning">注意</font>`,
+			want: `<font color="warning">注意</font>`,
+		},
+		{
+			name: "无引号的裸值",
+			in:   `<font color=info>绿字</font>`,
+			want: `<font color="info">绿字</font>`,
+		},
+		{
+			name: "不支持的颜色整体剥除标签",
+			in:   `<font color="red">红字</font>普通文本`,
+			want: "红字普通文本",
+			bad:  "<font",
+		},
+		{
+			name: "无 color 属性的空标签剥除",
+			in:   `<font>x</font>y`,
+			want: "xy",
+			bad:  "font",
+		},
+		{
+			name: "未闭合的合法标签自动补闭标签",
+			in:   `<font color="comment">灰字未完`,
+			want: `<font color="comment">灰字未完</font>`,
+		},
+		{
+			name: "流式帧尾被截断的半拉标签本帧隐藏",
+			in:   `前文 <font color="comm`,
+			want: "前文 ",
+			bad:  "<font",
+		},
+		{
+			name: "非法外层包合法内层，闭标签按栈配对",
+			in:   `<font color="red">a<font color="comment">b</font>c</font>`,
+			want: `a<font color="comment">b</font>c`,
+			bad:  "red",
+		},
+		{
+			name: "普通文本不受影响",
+			in:   "答案是 42，没有任何标签",
+			want: "答案是 42，没有任何标签",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := sanitizeFontTags(c.in)
+			if c.want != "" && !strings.Contains(got, c.want) {
+				t.Fatalf("want substring %q, got %q", c.want, got)
+			}
+			if c.bad != "" && strings.Contains(got, c.bad) {
+				t.Fatalf("must not contain %q, got %q", c.bad, got)
+			}
+			// 任何输出里都不该再出现变体空格写法。
+			if strings.Contains(strings.ToLower(got), "color =") || strings.Contains(strings.ToLower(got), "color= ") {
+				t.Fatalf("non-canonical font tag leaked: %q", got)
+			}
+		})
+	}
+}
+
+// TestRenderStreamSanitizesModelFontTags 端到端：正文里的坏标签不会原文出现在帧里。
+func TestRenderStreamSanitizesModelFontTags(t *testing.T) {
+	out := renderStream(port.IMCardState{
+		Phase: port.IMCardDone,
+		Body:  `<font color = "comment">过程摘要，结论如下</font>：一切正常`,
+	})
+	if strings.Contains(out, "color =") {
+		t.Fatalf("model font tag variant leaked into frame: %s", out)
+	}
+	if !strings.Contains(out, `<font color="comment">过程摘要，结论如下</font>`) {
+		t.Fatalf("valid variant must be canonicalized: %s", out)
+	}
+}
+
 // TestRenderThinking 思考阶段：灰色引用区展示完整过程，正文占位，底部状态行。
 func TestRenderThinking(t *testing.T) {
 	out := renderStream(port.IMCardState{

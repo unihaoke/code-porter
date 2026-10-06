@@ -2,18 +2,22 @@
 REM ============================================================================
 REM  CodePorter Client - one-click Windows build
 REM
-REM  Double-click this file (or: build-client.bat) to produce:
-REM    client\release\CodePorter-<ver>-x64.exe   single-file portable
+REM  Double-click this file (or: build-client.bat) to produce, under client\release\:
+REM    CodePorter-<ver>-portable.exe   single-file portable
 REM      (no installer, no registry writes - just double-click and run)
-REM    client\release\CodePorter-<ver>-x64.zip   same app as a plain zip
+REM    CodePorter-<ver>.zip            same app as a plain zip (fallback)
+REM    win-unpacked\                   unpacked app; electron-builder has to
+REM      assemble it before any compression, so it is kept on every stage for
+REM      incremental repacks and direct test runs (delete it manually to reclaim
+REM      the ~200MB)
 REM
 REM  Steps:  build Go core, build Electron UI, package exe
 REM  ("->" is avoided on purpose: cmd would read ">" as a redirection.)
 REM
 REM  Run a single stage:
-REM    build-client.bat deps      install npm dependencies only
+REM    build-client.bat deps      install npm dependencies + Electron runtime only
 REM    build-client.bat core      force-build the Go core only
-REM    build-client.bat app       build the Electron app only
+REM    build-client.bat app       build the Electron app only (core untouched)
 REM    build-client.bat pack      full package only (portable exe, no UI recompile)
 REM    build-client.bat dir       fastest: unpacked folder only, no compression
 REM    build-client.bat zip       unpacked folder + zip, skip portable compression
@@ -33,11 +37,23 @@ set "ROOT=%~dp0"
 set "CLIENT=%ROOT%client"
 set "STEP=%~1"
 
+REM Reject unknown stages up front instead of silently running a full build.
+if defined STEP (
+  for %%S in (deps core app pack dir zip portable) do (
+    if /i "%STEP%"=="%%S" goto :argsok
+  )
+  echo [ERROR] Unknown stage "%STEP%".
+  echo Supported: deps core app pack dir zip portable ^(no argument = full build^)
+  exit /b 1
+)
+:argsok
+
 REM --- Defaults tuned for networks where GitHub / npm are slow -------------
 if not defined GOPROXY         set "GOPROXY=https://goproxy.cn,direct"
 if not defined ELECTRON_MIRROR set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
-REM NSIS / winCodeSign 等打包工具链默认从 GitHub Releases 下载（国内经常不通）。
-REM 这个变量让 electron-builder 改从同一套文件的国内镜像取。
+REM NSIS / winCodeSign and the other packaging toolchains are downloaded from
+REM GitHub Releases by default (often unreachable from CN networks). This makes
+REM electron-builder fetch the same files from the domestic mirror instead.
 if not defined ELECTRON_BUILDER_BINARIES_MIRROR set "ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/"
 
 echo.
@@ -49,36 +65,56 @@ echo.
 
 REM ---------- 0. prerequisites ----------
 where go   >nul 2>&1 || (echo [ERROR] Go not found. Install Go 1.23+ and add it to PATH. & goto :fail)
-where node >nul 2>&1 || (echo [ERROR] Node not found. Install Node.js 18+ and add it to PATH. & goto :fail)
+where node >nul 2>&1 || (echo [ERROR] Node not found. Install Node.js 20.19+ and add it to PATH. & goto :fail)
 for /f "tokens=*" %%v in ('go version') do set "GOVER=%%v"
 for /f "tokens=*" %%v in ('node -v') do set "NODEVER=%%v"
-echo [1/5] Environment OK: %GOVER% ^| Node %NODEVER%
+REM Vite 6 refuses to run on Node older than 20.19; fail here with a clear
+REM message instead of a cryptic error several minutes into the UI build.
+for /f "tokens=1 delims=." %%v in ('node -v') do set "NODEMAJOR=%%v"
+set "NODEMAJOR=%NODEMAJOR:v=%"
+if %NODEMAJOR% LSS 20 (
+  echo [ERROR] Node.js 20.19+ required, found %NODEVER%. Upgrade Node and run again.
+  goto :fail
+)
+echo [1/6] Environment OK: %GOVER% ^| Node %NODEVER%
 
 REM ---------- 1. npm dependencies ----------
-if "%STEP%"=="pack" goto :core
+REM Pack-only stages reuse the already-installed toolchain and UI artifacts,
+REM so they skip dependency installation and the runtime download check.
+if /i "%STEP%"=="pack"     goto :core
+if /i "%STEP%"=="dir"      goto :core
+if /i "%STEP%"=="zip"      goto :core
+if /i "%STEP%"=="portable" goto :core
+
 if not exist "%CLIENT%\node_modules" (
-  echo [2/5] Installing npm dependencies ^(first run takes a while^)...
+  echo [2/6] Installing npm dependencies ^(first run takes a while^)...
   pushd "%CLIENT%"
   call npm install --no-audit --no-fund
   if errorlevel 1 (popd & echo [ERROR] npm install failed. & goto :fail)
   popd
 ) else (
-  echo [2/5] Dependencies already installed, skipping.
+  echo [2/6] Dependencies already installed, skipping.
 )
 
 REM ---------- 2. Electron runtime ----------
 REM npm allow-scripts may block electron's postinstall, leaving no binary.
 if not exist "%CLIENT%\node_modules\electron\dist\electron.exe" (
-  echo [2.5/5] Downloading Electron runtime...
+  echo [3/6] Downloading Electron runtime...
   pushd "%CLIENT%"
   call node node_modules\electron\install.js
   if errorlevel 1 (popd & echo [ERROR] Electron runtime download failed. & goto :fail)
   popd
+) else (
+  echo [3/6] Electron runtime present, skipping.
 )
+
+REM deps stops here; app skips straight to the UI build (no Go core needed).
+if /i "%STEP%"=="deps" goto :ok
+if /i "%STEP%"=="app"  goto :app
 
 REM ---------- 3. Go core ----------
 :core
-echo [3/5] Building Go core...
+echo [4/6] Building Go core...
 REM Build through the Node helper so we get an incremental skip for free: when no
 REM .go source is newer than the existing binary it reuses it instead of linking
 REM again. "core" stage or FORCE_CORE=1 forces a clean rebuild. The helper also
@@ -111,22 +147,22 @@ REM the core binary with this line's text (that is exactly what produced the
 REM 9/26-byte "core" that failed to start).
 echo       core: backend\bin\codeporter-core.exe ^(%CORESIZE% bytes^)
 
-if "%STEP%"=="core" goto :ok
+if /i "%STEP%"=="core" goto :ok
 REM Pack-only stages reuse the already-built UI and jump straight to packaging.
-if "%STEP%"=="pack"     goto :package
-if "%STEP%"=="dir"      goto :packdironly
-if "%STEP%"=="zip"      goto :packzip
-if "%STEP%"=="portable" goto :packportable
+if /i "%STEP%"=="pack"     goto :package
+if /i "%STEP%"=="dir"      goto :packdironly
+if /i "%STEP%"=="zip"      goto :packzip
+if /i "%STEP%"=="portable" goto :packportable
 
 REM ---------- 4. Electron app ----------
 :app
-echo [4/5] Building Electron main process and renderer...
+echo [5/6] Building Electron main process and renderer...
 pushd "%CLIENT%"
 call npm run build < nul
 if errorlevel 1 (popd & echo [ERROR] App build failed. & goto :fail)
 popd
 
-if "%STEP%"=="app" goto :ok
+if /i "%STEP%"=="app" goto :ok
 
 REM ---------- 5. package ----------
 :package
@@ -139,25 +175,26 @@ if "%SKIP_INSTALLER%"=="1" goto :packzip
 
 :packportable
 call :sanitizeproxy
-echo [5/5] Packaging portable exe ^(single file, no installer^)...
+echo [6/6] Packaging portable exe ^(single file, no installer^)...
 pushd "%CLIENT%"
 call npx electron-builder --win portable --x64 --config electron-builder.config.cjs < nul
 set "RC=%ERRORLEVEL%"
 popd
 if "%RC%"=="0" goto portableok
-if "%STEP%"=="portable" (echo [ERROR] Portable build failed. & goto :fail)
+if /i "%STEP%"=="portable" (echo [ERROR] Portable build failed. & goto :fail)
 echo.
 echo [WARN] Portable build failed. Falling back to directory build + zip.
 echo.
 goto :packzip
 :portableok
-REM Portable exe is self-contained; the unpacked folder was only an intermediate.
-call :cleanunpacked
+REM win-unpacked is retained on purpose: electron-builder had to assemble it
+REM anyway, keeping it makes the next repack incremental and CodePorter.exe
+REM inside is directly runnable for smoke tests.
 goto :packok
 
 :packzip
 call :sanitizeproxy
-echo [5/5] Packaging directory build + zip...
+echo [6/6] Packaging directory build + zip...
 pushd "%CLIENT%"
 call npx electron-builder --dir --win --x64 --config electron-builder.config.cjs < nul
 if errorlevel 1 (popd & echo [ERROR] Directory build failed. & goto :fail)
@@ -165,13 +202,12 @@ call npx electron-builder --win zip --x64 --config electron-builder.config.cjs <
 set "RC=%ERRORLEVEL%"
 popd
 if not "%RC%"=="0" (echo [ERROR] Zip build failed. & goto :fail)
-REM The zip already contains the whole app; drop the redundant 200MB+ folder.
-call :cleanunpacked
+REM Both the zip and win-unpacked are kept (same reason as :portableok above).
 goto :packok
 
 :packdironly
 call :sanitizeproxy
-echo [5/5] Packaging unpacked directory only ^(fastest, no compression^)...
+echo [6/6] Packaging unpacked directory only ^(fastest, no compression^)...
 pushd "%CLIENT%"
 call npx electron-builder --dir --win --x64 --config electron-builder.config.cjs < nul
 popd
@@ -254,17 +290,6 @@ echo.%PVAL%| findstr /i /r /c:"://[0-9a-z._-]*[0-9a-z]:[1-9][0-9]*" >nul
 if not errorlevel 1 goto :eof
 echo [WARN] %PVAR%="%PVAL%" is not a usable proxy URL - ignoring it for packaging.
 set "%PVAR%="
-goto :eof
-
-:cleanunpacked
-REM win-unpacked is a mandatory intermediate electron-builder assembles before
-REM compressing the portable exe / zip. It is 200MB+ and is not a deliverable
-REM once a self-contained exe or zip exists, so remove it on those stages to save
-REM disk and keep release\ clean. The "dir" stage keeps it on purpose.
-if exist "%CLIENT%\release\win-unpacked" (
-  echo       Cleaning intermediate win-unpacked folder...
-  rmdir /s /q "%CLIENT%\release\win-unpacked"
-)
 goto :eof
 
 :checkpackedcore

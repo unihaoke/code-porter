@@ -12,6 +12,7 @@
 package wecombot
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/codeporter/code-porter/internal/application/port"
@@ -39,11 +40,14 @@ const (
 // 输出保证不超过 maxStreamContentBytes（含安全余量）。
 func renderStream(state port.IMCardState) string {
 	running := state.Phase == port.IMCardRunning
-	body := strings.TrimSpace(state.Body)
+	// 模型/工具输出里可能夹带模型自己写的 <font> 标签（等号两边带空格、
+	// 不支持的颜色、未闭合等），企微对该标签是严格语法，任何变体都会被
+	// 当纯文本原样显示。着色是本渲染器的职责，先对三段输入统一消毒。
+	body := strings.TrimSpace(sanitizeFontTags(state.Body))
 	hasBody := body != ""
 
 	proc := ""
-	if p := strings.TrimSpace(state.Process); p != "" {
+	if p := strings.TrimSpace(sanitizeFontTags(state.Process)); p != "" {
 		if running && !hasBody {
 			proc = processBlock("💭 思考与执行过程", tailRunes(p, processFullMaxRunes))
 		} else {
@@ -65,7 +69,7 @@ func renderStream(state port.IMCardState) string {
 
 	footer := ""
 	if running {
-		if f := strings.TrimSpace(state.Footer); f != "" {
+		if f := strings.TrimSpace(sanitizeFontTags(state.Footer)); f != "" {
 			footer = font(colorGrey, f)
 		} else {
 			footer = font(colorGrey, "_正在处理…_")
@@ -99,6 +103,82 @@ func summarizeProcess(process string) string {
 // font 用企微 markdown 行内字体着色。
 func font(color, s string) string {
 	return `<font color="` + color + `">` + s + `</font>`
+}
+
+var (
+	// fontTagRe 匹配完整的 <font ...> / </font> 标签（容忍大小写与空白变体）。
+	fontTagRe = regexp.MustCompile(`(?i)<\s*/?\s*font\b[^>]*>`)
+	// fontColorRe 从开标签里提取 color 值（容忍 color = 'x'、color=x 等变体）。
+	fontColorRe = regexp.MustCompile(`(?i)\bcolor\s*=\s*["']?([a-z]+)["']?`)
+	// fontPartialRe 匹配帧尾被截断的半拉标签（流式切片所致），本帧先隐藏，
+	// 下一帧标签完整后会自动正常渲染。
+	fontPartialRe = regexp.MustCompile(`(?i)<\s*/?\s*font\b[^>]*$`)
+)
+
+// allowedFontColors 企微 markdown 仅支持的三种行内颜色。
+var allowedFontColors = map[string]string{
+	"info":    "info",
+	"comment": "comment",
+	"warning": "warning",
+}
+
+// sanitizeFontTags 消毒模型/工具输出中自带的 <font> 标签。
+//
+// 企微只认严格写法 <font color="info|comment|warning">（等号两侧无空格、
+// 值带双引号），模型输出的 <font color = 'comment'>、<font color="red">
+// 等变体不会被解析，标签会被当纯文本原样展示。处理规则：
+//   - 合法颜色的变体写法规范化为严格语法；
+//   - 非法颜色/残缺属性的 font 标签整体剥除（着色由渲染器负责）；
+//   - 用栈配对开闭标签，丢弃非法开标签对应的闭标签，补齐未闭合的合法标签，
+//     避免一个坏标签污染其后整段消息的渲染；
+//   - 帧尾被流式截断的半拉标签本帧先移除。
+func sanitizeFontTags(s string) string {
+	if s == "" || !strings.Contains(strings.ToLower(s), "font") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	// stack 记录每个尚未闭合的开标签是否合法（true=输出了规范化开标签）。
+	validStack := make([]bool, 0, 4)
+	last := 0
+	for _, m := range fontTagRe.FindAllStringIndex(s, -1) {
+		b.WriteString(s[last:m[0]])
+		tag := strings.ToLower(s[m[0]:m[1]])
+		last = m[1]
+		if strings.HasPrefix(strings.TrimLeft(tag[1:], " \t"), "/") {
+			// 闭标签：仅当其配对的开标签合法时才输出。
+			if len(validStack) > 0 {
+				valid := validStack[len(validStack)-1]
+				validStack = validStack[:len(validStack)-1]
+				if valid {
+					b.WriteString("</font>")
+				}
+			}
+			continue
+		}
+		color := ""
+		if cm := fontColorRe.FindStringSubmatch(tag); cm != nil {
+			color = allowedFontColors[cm[1]]
+		}
+		if color != "" {
+			validStack = append(validStack, true)
+			b.WriteString(`<font color="` + color + `">`)
+		} else {
+			validStack = append(validStack, false)
+		}
+	}
+	b.WriteString(s[last:])
+	out := b.String()
+
+	// 补齐流式中途模型未闭合的合法开标签（逆序不影响结果：闭标签无属性）。
+	for _, valid := range validStack {
+		if valid {
+			out += "</font>"
+		}
+	}
+	// 去掉帧尾的半拉标签（如 '<font color="comm'）。
+	out = fontPartialRe.ReplaceAllString(out, "")
+	return out
 }
 
 // capContent 组装三段内容并保证总字节数 ≤ limit：

@@ -211,7 +211,13 @@ func (s *ipcServer) dispatch(ctx context.Context, req ipcRequest) {
 		}
 		s.mu.Lock()
 		s.cfg = incoming
+		svc := s.svc
 		s.mu.Unlock()
+		// Service 实例复用、不会随保存重建：必须把新配置同步进去，否则状态展示
+		// （ai_tools / bots 启用态）与后续 Start* 仍按旧配置执行。
+		if svc != nil {
+			svc.UpdateConfig(incoming)
+		}
 		s.log.Info("agent config saved", port.F("path", s.cfgPath))
 		s.send(ipcEvent{Event: "status", Data: s.statusPayload()})
 		s.respond(req.ID, map[string]any{"saved": true, "path": s.cfgPath}, nil)

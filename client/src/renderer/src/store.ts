@@ -63,6 +63,14 @@ const state = reactive({
   botTestResults: {} as Record<string, BotTestResult>,
   // 本地 AI 工具预热运行时是第三个独立服务，忙状态同样独立。
   toolsBusy: false,
+  // 概览手动刷新（重拉运行态 + 免额度安装检测）中。
+  refreshing: false,
+  // 当前激活的一级页（用于日志未读计数等跨页逻辑）。
+  activeTab: 'dashboard' as 'dashboard' | 'bots' | 'settings' | 'logs',
+  // 不在日志页时收到的日志条数；切回日志页清零。
+  unreadLogs: 0,
+  // 外观主题（localStorage 持久化，默认跟随系统浅色）。
+  theme: 'light' as 'light' | 'dark',
   ready: false,
   toasts: [] as Toast[]
 })
@@ -70,6 +78,30 @@ const state = reactive({
 let logSeq = 0
 let toastSeq = 0
 const MAX_LOGS = 3000
+
+/**
+ * 最近一次「已保存」配置的 JSON 快照。配置页用它判断是否有未保存改动
+ * （脏检查），保存成功后刷新。配置为纯 JSON 数据，字符串比较最稳。
+ */
+let savedSnapshot = ''
+
+function snapshotOf(cfg: AgentConfig | null): string {
+  return cfg ? JSON.stringify(cfg) : ''
+}
+
+/**
+ * 指定配置节（顶层键）是否相对已保存快照有改动；
+ * 不传 sections 时判断整份配置。
+ */
+function isDirty(sections?: string[]): boolean {
+  if (!state.config) return false
+  if (!sections || sections.length === 0) {
+    return JSON.stringify(state.config) !== savedSnapshot
+  }
+  const cur = state.config as Record<string, unknown>
+  const saved = (JSON.parse(savedSnapshot || '{}') as Record<string, unknown>)
+  return sections.some((k) => JSON.stringify(cur[k]) !== JSON.stringify(saved[k]))
+}
 
 /** 弹一条界面提示。错误类停留更久；同屏最多保留 3 条，避免刷屏。 */
 function toast(text: string, kind: Toast['kind'] = 'info'): void {
@@ -89,6 +121,41 @@ function dismissToast(id: number): void {
 function pushLog(level: LogEntry['level'], time: string, msg: string): void {
   state.logs.push({ id: ++logSeq, level, time, msg })
   if (state.logs.length > MAX_LOGS) state.logs.splice(0, state.logs.length - MAX_LOGS)
+  // 只有不在日志页时才累计未读，避免 badge 数字无意义地增长。
+  if (state.activeTab !== 'logs') state.unreadLogs++
+}
+
+/** 切换一级页（App 侧边栏调用）；进入日志页时未读清零。 */
+function setActiveTab(tab: typeof state.activeTab): void {
+  state.activeTab = tab
+  if (tab === 'logs') state.unreadLogs = 0
+}
+
+const THEME_KEY = 'codeporter.theme'
+
+/** 应用主题到 <html data-theme>，CSS 变量按该属性切换色板。 */
+function applyTheme(theme: 'light' | 'dark'): void {
+  document.documentElement.dataset.theme = theme
+}
+
+/** 初始化主题：优先本地存储，否则跟随系统外观。 */
+function initTheme(): void {
+  const saved = localStorage.getItem(THEME_KEY)
+  const prefersDark =
+    window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  state.theme = saved === 'dark' || saved === 'light'
+    ? saved
+    : prefersDark
+      ? 'dark'
+      : 'light'
+  applyTheme(state.theme)
+}
+
+/** 切换明 / 暗主题并持久化。 */
+function toggleTheme(): void {
+  state.theme = state.theme === 'dark' ? 'light' : 'dark'
+  localStorage.setItem(THEME_KEY, state.theme)
+  applyTheme(state.theme)
 }
 
 /** 处理来自 Go 核心的事件。 */
@@ -176,9 +243,11 @@ function defaultWeComBot() {
 
 /** 初始化：拉配置 + 订阅事件 + 拉一次状态。 */
 async function init(): Promise<void> {
+  initTheme()
   api.onEvent(handleEvent)
   try {
     state.config = ensureConfigShape(await api.getConfig())
+    savedSnapshot = snapshotOf(state.config)
     state.status = await api.status()
   } catch (err) {
     pushLog('error', now(), `初始化失败：${(err as Error).message}`)
@@ -187,6 +256,7 @@ async function init(): Promise<void> {
       await sleep(700)
       try {
         state.config = ensureConfigShape(await api.getConfig())
+        savedSnapshot = snapshotOf(state.config)
         state.status = await api.status()
       } catch {
         /* 继续重试 */
@@ -229,6 +299,30 @@ async function refreshHealth(): Promise<void> {
   }
 }
 
+/**
+ * 手动刷新概览：重拉运行态（运行中/启用态/机器人配置态）并重跑一次免额度
+ * 安装检测（「本地 AI 可用」数）。
+ *
+ * 刻意不重拉 config：配置页直接 v-model 编辑 state.config，拉盘会冲掉未保存
+ * 的修改；保存后的配置态已由 config.save 的 status 事件同步。
+ */
+async function refreshOverview(): Promise<void> {
+  if (state.refreshing) return
+  state.refreshing = true
+  try {
+    const st = await api.status()
+    if (st) state.status = st
+    await primeHealth()
+    pushLog('info', now(), '概览已刷新')
+  } catch (err) {
+    const msg = errMessage(err)
+    pushLog('error', now(), `刷新概览失败：${msg}`)
+    toast(`刷新失败：${msg}`, 'error')
+  } finally {
+    state.refreshing = false
+  }
+}
+
 function now(): string {
   return new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
@@ -261,6 +355,7 @@ async function saveConfig(): Promise<string | null> {
     // 必须传纯数据：state.config 是 reactive 代理，直接传会
     // "An object could not be cloned"。
     await api.saveConfig(toPlain(state.config))
+    savedSnapshot = snapshotOf(state.config)
     pushLog('info', now(), '配置已保存')
     toast('配置已保存')
     return null
@@ -421,7 +516,7 @@ async function stopTools(): Promise<string | null> {
  *
  * @returns 成功返回 null；失败返回错误信息。
  */
-async function saveAndRestartLocalAI(): Promise<string | null> {
+async function saveAndRestartRunning(): Promise<string | null> {
   if (!state.config) return '配置尚未加载完成'
   const agentWasRunning = !!state.status?.running
   // 机器人按渠道独立运行：记录当前在跑的渠道集合，稍后只重启这些渠道，
@@ -438,6 +533,7 @@ async function saveAndRestartLocalAI(): Promise<string | null> {
   try {
     // 1) 先落盘（必须传纯数据，原因同 saveConfig）。
     await api.saveConfig(toPlain(state.config))
+    savedSnapshot = snapshotOf(state.config)
     pushLog('info', now(), '配置已保存')
 
     // 2) 没有运行中的服务：下次启动自然用新配置，无需重启。
@@ -584,7 +680,10 @@ export function useStore() {
     toast,
     dismissToast,
     saveConfig,
-    saveAndRestartLocalAI,
+    saveAndRestartRunning,
+    isDirty,
+    setActiveTab,
+    toggleTheme,
     startAgent,
     stopAgent,
     startBots,
@@ -595,6 +694,7 @@ export function useStore() {
     testCli,
     pickWorkDir,
     openConfigDir,
-    refreshHealth
+    refreshHealth,
+    refreshOverview
   }
 }

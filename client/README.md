@@ -34,10 +34,12 @@ build-client.bat
 | --- | --- |
 | `CodePorter-<版本>-portable.exe` | **免安装单文件**，双击即用，不写注册表、不需要安装 |
 | `CodePorter-<版本>.zip` | 免安装 exe 打包失败时的回退产物（内容等价的压缩包） |
+| `win-unpacked\CodePorter.exe` | 解包目录，可直接双击运行做冒烟验证 |
 
 > 打包过程中的 `win-unpacked\` 是 electron-builder 的**必经中间目录**（先解包组装，
-> 再压缩成单文件 exe / zip），体积约 200MB+，**不是分发物**。portable / zip 成功后
-> 脚本会自动删除它，`release\` 只留下最终的 exe / zip。
+> 再压缩成单文件 exe / zip），体积约 200MB+。脚本在 portable / zip 成功后**不会删除它**：
+> 既然每次打包都必须重新生成，保留它能让下次重打包走增量，也方便直接进目录验证；
+> 需要回收磁盘空间时手动删除整个 `win-unpacked\` 即可。
 
 默认**不再产出安装版**，因此也不需要下载 NSIS 工具链。偶尔需要安装版时：
 
@@ -50,12 +52,12 @@ npx electron-builder --win nsis --x64 --config electron-builder.config.cjs
 
 | 命令 | 作用 |
 | --- | --- |
-| `build-client.bat deps` | 只装 npm 依赖 |
+| `build-client.bat deps` | 只装/校验 npm 依赖与 Electron 运行时（不编译） |
 | `build-client.bat core` | **强制**重编 Go 核心 |
-| `build-client.bat app` | 只构建 Electron 界面 |
+| `build-client.bat app` | 只构建 Electron 界面（不动 Go 核心） |
 | `build-client.bat pack` | 只打包（复用已构建产物，不重新编译界面） |
-| `build-client.bat dir` | **最快**：只产出解包目录，不做任何压缩，保留 `win-unpacked\` 供直接双击验证 |
-| `build-client.bat zip` | 解包目录 + zip，跳过最慢的单文件压缩，完成后清理 `win-unpacked\` |
+| `build-client.bat dir` | **最快**：只产出解包目录，不做任何压缩，`win-unpacked\` 供直接双击验证 |
+| `build-client.bat zip` | 产出解包目录 + zip，跳过最慢的单文件压缩（目录保留不清理） |
 | `build-client.bat portable` | 只打免安装单文件 exe，失败不回退（CI 用） |
 
 提速相关：

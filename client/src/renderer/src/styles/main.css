@@ -46,6 +46,64 @@
   --sidebar-w: 208px;
 }
 
+/* ---------- 暗色主题：<html data-theme="dark"> ---------- */
+
+[data-theme='dark'] {
+  --c-bg: #14171c;
+  --c-surface: #1c2027;
+  --c-surface-2: #191d23;
+  --c-surface-3: #252b34;
+  --c-border: #2c333d;
+  --c-border-strong: #3b4350;
+
+  --c-text: #e6e9ef;
+  --c-text-2: #a7b0bd;
+  --c-text-3: #75808f;
+
+  --c-primary: #5c7cfa;
+  --c-primary-hover: #748efb;
+  --c-primary-soft: rgba(92, 124, 250, 0.16);
+  --c-primary-border: rgba(92, 124, 250, 0.42);
+
+  --c-ok: #40c08a;
+  --c-ok-soft: rgba(64, 192, 138, 0.15);
+  --c-warn: #e8a14a;
+  --c-warn-soft: rgba(232, 161, 74, 0.15);
+  --c-err: #ef6a6a;
+  --c-err-soft: rgba(239, 106, 106, 0.15);
+  --c-info: #5c7cfa;
+
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --sh-2: 0 2px 8px rgba(0, 0, 0, 0.35);
+  --sh-3: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* 暗色下 tag / badge 的描边改用语义色半透明，避免沿用浅色硬编码。 */
+[data-theme='dark'] .tag--ok,
+[data-theme='dark'] .badge--on {
+  border-color: rgba(64, 192, 138, 0.4);
+}
+[data-theme='dark'] .tag--warn {
+  border-color: rgba(232, 161, 74, 0.4);
+}
+[data-theme='dark'] .tag--err {
+  border-color: rgba(239, 106, 106, 0.4);
+}
+[data-theme='dark'] .tag--muted,
+[data-theme='dark'] .badge--off {
+  border-color: var(--c-border);
+}
+[data-theme='dark'] .btn--danger {
+  border-color: rgba(239, 106, 106, 0.45);
+}
+[data-theme='dark'] .notice code {
+  background: var(--c-surface-3);
+}
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: #3a414c;
+  background-clip: content-box;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -722,8 +780,9 @@ body {
 }
 
 .toast {
-  background: var(--c-text);
-  color: #fff;
+  /* 固定深色，不受明暗主题翻转影响（浮层在两种主题下都保持高对比）。 */
+  background: #2a2f38;
+  color: #f2f4f7;
   padding: 9px 14px;
   border-radius: var(--r-sm);
   box-shadow: var(--sh-3);
@@ -773,3 +832,141 @@ body {
   background: #3a4149;
   background-clip: content-box;
 }
+
+/* ---------- 图标 / 链接型按钮（不作为主要操作） ---------- */
+
+.btn--icon {
+  width: 30px;
+  padding: 0;
+  flex: none;
+}
+
+.btn--link {
+  border: none;
+  background: transparent;
+  color: var(--c-primary);
+  height: auto;
+  padding: 2px 4px;
+}
+
+.btn--link:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+
+/* ---------- 配置页底部固定保存条 ---------- */
+
+.savebar {
+  position: sticky;
+  bottom: -28px; /* 抵消 .main 底部 padding，让条贴住视口底边 */
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 18px -26px -28px; /* 左右抵消 .main padding，通栏 */
+  padding: 12px 26px;
+  background: color-mix(in srgb, var(--c-surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-top: 1px solid var(--c-border);
+  box-shadow: 0 -4px 16px rgba(20, 25, 35, 0.06);
+}
+
+.savebar__hint {
+  font-size: 12px;
+  color: var(--c-text-3);
+}
+
+.savebar__dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--c-warn);
+  font-weight: 550;
+}
+
+.savebar__dirty::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c-warn);
+}
+
+/* 卡片标题上的「未保存」小标记。 */
+.card__dirty {
+  font-size: 11px;
+  color: var(--c-warn);
+  font-weight: 550;
+}
+
+/* ---------- 首次使用引导 ---------- */
+
+.onboarding {
+  border-color: var(--c-primary-border);
+  background: linear-gradient(
+    180deg,
+    var(--c-primary-soft),
+    var(--c-surface) 130%
+  );
+}
+
+.onboarding__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.onboarding__step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--c-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.onboarding__step:not(.onboarding__step--done):not(.onboarding__step--static):hover {
+  background: var(--c-primary-soft);
+}
+
+.onboarding__step--static {
+  cursor: default;
+}
+
+.onboarding__check {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex: none;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  border: 1px solid var(--c-border-strong);
+  color: var(--c-text-3);
+  background: var(--c-surface);
+}
+
+.onboarding__check--done {
+  background: var(--c-ok);
+  border-color: var(--c-ok);
+  color: #fff;
+}
+
+.onboarding__step--done {
+  color: var(--c-text-3);
+}
+
+.onboarding__step--done .onboarding__text {
+  text-decoration: line-through;
+}
+

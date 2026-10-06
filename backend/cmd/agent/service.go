@@ -85,6 +85,25 @@ func NewService(cfgPath string, cfg *config.AgentConfig, log *logging.Logger) *S
 	return &Service{cfgPath: cfgPath, cfg: cfg, log: log, bots: make(map[string]*botRuntime)}
 }
 
+// UpdateConfig 热更新内存配置指针：IPC 层 config.save 落盘后同步调用。
+//
+// 注意语义边界：已经在运行的实例（代理消费者、各渠道机器人、工具预热注册表）
+// 在启动时就固化了各自的配置副本/子进程环境，不会因本次替换而改变，需按界面
+// 「保存并重启」语义 stop+start 才生效；但状态展示（Status）以及之后的
+// Start / StartBot / StartTools / TestBot 立即按新配置执行。
+func (s *Service) UpdateConfig(cfg *config.AgentConfig) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+}
+
+// getConfig 返回当前配置指针（配置可能被 UpdateConfig 热替换，必须经锁读取）。
+func (s *Service) getConfig() *config.AgentConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
 // Running 报告代理是否正在运行。
 func (s *Service) Running() bool {
 	s.mu.Lock()
@@ -105,7 +124,7 @@ func (s *Service) Status() map[string]any {
 	if toolsRunning && toolsReg != nil {
 		warmed = toolsReg.RunningModels()
 	}
-	cfg := s.cfg
+	cfg := s.getConfig()
 	if cfg == nil {
 		return map[string]any{"running": false, "tools_running": false, "bots": map[string]any{}}
 	}
@@ -201,7 +220,7 @@ func (s *Service) Start() error {
 	}
 	s.mu.Unlock()
 
-	cfg := s.cfg
+	cfg := s.getConfig()
 	instanceID, err := config.EnsureAgentIdentity(cfg, s.cfgPath)
 	if err != nil {
 		return err
@@ -393,7 +412,7 @@ func (s *Service) botLockDir() string {
 // 供无界面启动（main）使用；GUI 按渠道调用 StartBot。
 func (s *Service) StartEnabledBots() {
 	for _, channel := range imbot.Channels() {
-		settings := channelBotConfig(s.cfg, channel)
+		settings := channelBotConfig(s.getConfig(), channel)
 		if !settings.enabled {
 			continue
 		}
@@ -421,7 +440,7 @@ func (s *Service) StartBots() ([]ChannelStartResult, error) {
 	var failed []string
 	enabled := 0
 	for _, channel := range imbot.Channels() {
-		if !channelBotConfig(s.cfg, channel).enabled {
+		if !channelBotConfig(s.getConfig(), channel).enabled {
 			continue
 		}
 		enabled++
@@ -459,7 +478,7 @@ func (s *Service) StartBot(channel string) error {
 	if !imbot.IsSupported(channel) {
 		return fmt.Errorf("未知 IM 渠道: %q（支持: %v）", channel, imbot.Channels())
 	}
-	settings := channelBotConfig(s.cfg, channel)
+	settings := channelBotConfig(s.getConfig(), channel)
 	if !settings.enabled {
 		return fmt.Errorf("%s 机器人未启用：请先在配置中开启 bots.%s.enabled 并保存", channel, channel)
 	}
@@ -488,17 +507,18 @@ func (s *Service) StartBot(channel string) error {
 	}
 
 	// 2) 该渠道独立的 MCP 注册表（含密钥环境注入），与代理/其他渠道互不影响。
-	botCfg := *s.cfg
-	botCfg.MCP.Env = s.secretsEnv(s.cfg)
+	cfg := s.getConfig()
+	botCfg := *cfg
+	botCfg.MCP.Env = s.secretsEnv(cfg)
 	registry := mcp.NewRegistry(botCfg.MCP, s.log)
 
 	policy := agentapp.Policy{
-		MaxConcurrency: s.cfg.WorkerPool.MaxConcurrency,
-		QueueSize:      s.cfg.WorkerPool.QueueSize,
-		MCPTimeout:     s.cfg.MCP.ClaudeCode.RequestTimeout,
+		MaxConcurrency: cfg.WorkerPool.MaxConcurrency,
+		QueueSize:      cfg.WorkerPool.QueueSize,
+		MCPTimeout:     cfg.MCP.ClaudeCode.RequestTimeout,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	workerPool := pool.New(s.cfg.WorkerPool.MaxConcurrency, s.cfg.WorkerPool.QueueSize,
+	workerPool := pool.New(cfg.WorkerPool.MaxConcurrency, cfg.WorkerPool.QueueSize,
 		pool.WithPanicHandler(func(jobID string, recovered any) {
 			s.log.Error("bot worker panic recovered",
 				port.F("channel", channel), port.F("task_id", jobID), port.F("panic", recovered))
@@ -648,7 +668,7 @@ func (s *Service) StartTools() ([]ToolStartResult, error) {
 	}
 	s.toolsMu.Unlock()
 
-	cfg := s.cfg
+	cfg := s.getConfig()
 	enabled := make([]model.Model, 0, len(model.All()))
 	for _, m := range model.All() {
 		if cfg.MCP.For(m).Enabled {
@@ -761,7 +781,7 @@ func (s *Service) TestBot(channel string) (BotTestResult, error) {
 		return BotTestResult{Channel: channel, Detail: "未知渠道: " + channel},
 			fmt.Errorf("未知 IM 渠道: %s", channel)
 	}
-	settings := channelBotConfig(s.cfg, channel)
+	settings := channelBotConfig(s.getConfig(), channel)
 	if strings.TrimSpace(settings.credID) == "" || strings.TrimSpace(settings.credSecret) == "" {
 		return BotTestResult{Channel: channel, Detail: "该渠道凭证未配置"},
 			errors.New(channel + " credentials missing")

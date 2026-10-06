@@ -3,15 +3,24 @@ import { computed } from 'vue'
 
 import { useStore } from '../store'
 import ToolCard from '../components/ToolCard.vue'
+import OnboardingCard from '../components/OnboardingCard.vue'
 
-const emit = defineEmits<{ go: ['settings' | 'logs']; notify: [string, boolean?] }>()
+const emit = defineEmits<{ go: ['settings' | 'logs' | 'bots']; notify: [string, boolean?] }>()
 
-const { state, startAgent, stopAgent, startBots, stopBots, startTools, stopTools, testCli } =
-  useStore()
+const {
+  state,
+  startAgent,
+  stopAgent,
+  startBots,
+  stopBots,
+  startTools,
+  stopTools,
+  refreshOverview
+} = useStore()
 
 /** 代理（网关任务通道）运行状态。 */
 const running = computed(() => !!state.status?.running)
-const busy = computed(() => state.busy || state.testing)
+const busy = computed(() => state.busy)
 
 /**
  * IM 机器人渠道元数据（展示层唯一的渠道清单，新增渠道时加一行即可）。
@@ -82,6 +91,21 @@ const taskStats = computed(() => {
   }
 })
 
+/** 聚合在运行的服务数：代理（1）+ 各机器人渠道 + 本地 AI 工具（1）。 */
+const runningServiceCount = computed(
+  () =>
+    (running.value ? 1 : 0) +
+    runningBotCount.value +
+    (toolsRunning.value ? 1 : 0)
+)
+
+/** 任务行主文案：优先 detail（通常是输入摘要），否则截短 task_id。 */
+function taskTitle(t: { detail?: string; task_id: string }): string {
+  const d = t.detail?.trim()
+  if (d) return d.length > 80 ? d.slice(0, 80) + '…' : d
+  return t.task_id.length > 16 ? t.task_id.slice(0, 16) + '…' : t.task_id
+}
+
 /** 有效工作目录：配置优先，否则客户端 exe 所在目录。 */
 const workDir = computed(() => state.status?.work_dir || '（客户端 exe 所在目录）')
 
@@ -112,40 +136,36 @@ async function onToggleTools(): Promise<void> {
   if (err) emit('notify', `本地 AI 工具启动失败：${err}`, true)
 }
 
-async function onTest(): Promise<void> {
-  const r = await testCli(false)
-  if (!r) {
-    emit('notify', '测试失败，详见运行日志', true)
-    return
-  }
-  if (r.ok > 0 && r.failed === 0 && r.missing === 0 && r.warned === 0) {
-    emit('notify', `全部正常：${r.ok} 个工具可用`)
-  } else {
-    emit('notify', `可用 ${r.ok} · 未安装 ${r.missing} · 需处理 ${r.warned} · 失败 ${r.failed}`)
-  }
+/** 手动刷新概览：重拉运行态并重跑免额度安装检测。 */
+async function onRefresh(): Promise<void> {
+  await refreshOverview()
+}
+
+/** 引导卡跳转：目标就是当前概览页的步骤不导航。 */
+function onboardingGo(target: string): void {
+  if (target === 'settings' || target === 'logs' || target === 'bots') emit('go', target)
 }
 </script>
 
 <template>
   <div class="page-head">
-    <h1>概览</h1>
+    <div class="page-head__row">
+      <h1>概览</h1>
+      <button class="btn btn--sm" :disabled="state.refreshing" title="重新拉取运行状态并检测本地 AI 安装情况" @click="onRefresh">
+        {{ state.refreshing ? '刷新中…' : '刷新' }}
+      </button>
+    </div>
     <p>代理（网关下发的任务）与 IM 机器人（飞书 / 企业微信长连接消息）相互独立；机器人各渠道之间也可分别启停。</p>
   </div>
 
   <!-- 关键指标 -->
-  <div class="grid grid--4">
+  <div class="grid grid--3">
     <div class="stat">
-      <div class="stat__label"><span class="dot" :class="running ? 'dot--live' : 'dot'" />代理状态</div>
-      <div class="stat__value" :style="{ color: running ? 'var(--c-ok)' : 'var(--c-text-3)' }">
-        {{ running ? '运行中' : '已停止' }}
+      <div class="stat__label"><span class="dot" :class="runningServiceCount > 0 ? 'dot--live' : 'dot'" />服务状态</div>
+      <div class="stat__value" :style="{ color: runningServiceCount > 0 ? 'var(--c-ok)' : 'var(--c-text-3)' }">
+        {{ runningServiceCount > 0 ? `${runningServiceCount} 个运行中` : '全部已停止' }}
       </div>
-      <div class="stat__sub">{{ running ? '正在连接网关拉取任务' : '机器人可脱离代理单独运行' }}</div>
-    </div>
-
-    <div class="stat">
-      <div class="stat__label">网关地址</div>
-      <div class="stat__value stat__value--sm">{{ state.status?.gateway ?? '—' }}</div>
-      <div class="stat__sub">Agent ID：{{ state.status?.agent_id ?? '—' }}</div>
+      <div class="stat__sub">代理 · 机器人 · 本地 AI 工具合计</div>
     </div>
 
     <div class="stat">
@@ -168,6 +188,11 @@ async function onTest(): Promise<void> {
     </div>
   </div>
 
+  <!-- 首次使用引导（全部步骤完成或手动收起后隐藏） -->
+  <div style="margin-top: 14px">
+    <OnboardingCard @go="onboardingGo" />
+  </div>
+
   <!-- 代理服务：网关任务通道 -->
   <div class="card" style="margin-top: 14px">
     <div class="card__head">
@@ -183,9 +208,6 @@ async function onTest(): Promise<void> {
       <button class="btn" :class="running ? 'btn--danger' : 'btn--primary'" :disabled="busy" @click="onToggle">
         {{ running ? '停止代理' : '启动代理' }}
       </button>
-      <button class="btn" :disabled="busy" @click="onTest">
-        {{ state.testing ? '测试中…' : '测试 CLI 连接' }}
-      </button>
       <button class="btn" @click="emit('go', 'settings')">前往配置</button>
       <button class="btn" @click="emit('go', 'logs')">查看日志</button>
       <span class="spacer" />
@@ -194,6 +216,10 @@ async function onTest(): Promise<void> {
       </span>
     </div>
     <p class="svc-note">接收网关 / OpenAI 兼容接口 / 网页控制台下发的任务，调用本机 AI 执行后回传。</p>
+    <div class="row row--wrap svc-meta">
+      <span><span class="tool__meta">网关：</span>{{ state.status?.gateway || '—' }}</span>
+      <span><span class="tool__meta">Agent ID：</span>{{ state.status?.agent_id || '—' }}</span>
+    </div>
   </div>
 
   <!-- IM 机器人：多渠道长连接，各渠道独立于代理、独立于彼此启停 -->
@@ -205,7 +231,7 @@ async function onTest(): Promise<void> {
           {{ !anyBotEnabled ? '未启用' : runningBotCount > 0 ? `${runningBotCount} 个渠道运行中` : '已停止' }}
         </span>
       </div>
-      <button class="btn btn--sm" @click="emit('go', 'settings')">配置</button>
+      <button class="btn btn--sm" @click="emit('go', 'bots')">配置</button>
     </div>
 
     <div
@@ -292,17 +318,15 @@ async function onTest(): Promise<void> {
     </div>
     <div v-if="state.tasks.length === 0" class="empty">还没有任务记录。任务由网关下发，本地执行后回传结果。</div>
     <div v-else class="grid" style="gap: 6px">
-      <div v-for="t in state.tasks.slice(0, 8)" :key="t.task_id + t.phase + (t.elapsed_ms ?? 0)" class="row">
+      <div v-for="t in state.tasks.slice(0, 8)" :key="t.task_id + t.phase + (t.elapsed_ms ?? 0)" class="task-row">
         <span
           class="tag"
           :class="t.phase === 'success' ? 'tag--ok' : t.phase === 'failed' ? 'tag--err' : 'tag--primary'"
         >
           {{ t.phase === 'start' ? '进行中' : t.phase === 'success' ? '成功' : '失败' }}
         </span>
-        <span class="tool__meta">{{ t.model }}</span>
-        <span style="color: var(--c-text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
-          {{ t.task_id }}
-        </span>
+        <span class="tag tag--muted">{{ t.model }}</span>
+        <span class="task-row__title" :title="t.detail || t.task_id">{{ taskTitle(t) }}</span>
         <span class="spacer" />
         <span v-if="t.elapsed_ms" class="tool__meta">{{ t.elapsed_ms }} ms</span>
       </div>
@@ -311,6 +335,18 @@ async function onTest(): Promise<void> {
 </template>
 
 <style scoped>
+/* 标题行：标题左、刷新按钮右。 */
+.page-head__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.page-head__row h1 {
+  margin: 0;
+}
+
 /* 服务卡下方的说明文字。 */
 .svc-note {
   margin: 10px 0 0;
@@ -353,5 +389,21 @@ async function onTest(): Promise<void> {
 
 .bot-channel--off .bot-channel__name {
   color: var(--c-text-3);
+}
+
+/* 最近任务行：状态 + 模型 + 摘要单行省略。 */
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-row__title {
+  color: var(--c-text-2);
+  font-size: 12.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
