@@ -376,7 +376,7 @@ function onboardingGo(target: string): void {
 .bot-channel__name {
   font-weight: 600;
   font-size: 14px;
-  color: var(--c-text-1);
+  color: var(--c-text);
 }
 
 .bot-channel__streamtag {
