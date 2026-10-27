@@ -55,9 +55,12 @@ type TaskLifecycleService struct {
 	log       port.Logger
 	policy    TaskPolicy
 	cfg       LifecycleConfig
+	callback  *CallbackDispatcher
 }
 
 // NewTaskLifecycleService 构造守护服务。
+//
+// callback 可为 nil（回调能力关闭）。
 func NewTaskLifecycleService(
 	taskRepo task.TaskRepository,
 	queueRepo task.TaskQueueRepository,
@@ -67,6 +70,7 @@ func NewTaskLifecycleService(
 	log port.Logger,
 	policy TaskPolicy,
 	cfg LifecycleConfig,
+	callback *CallbackDispatcher,
 ) *TaskLifecycleService {
 	return &TaskLifecycleService{
 		taskRepo:  taskRepo,
@@ -77,6 +81,7 @@ func NewTaskLifecycleService(
 		log:       log.With(port.F("svc", "lifecycle")),
 		policy:    policy.withDefaults(),
 		cfg:       cfg.withDefaults(),
+		callback:  callback,
 	}
 }
 
@@ -137,6 +142,7 @@ func (s *TaskLifecycleService) sweepLocks(ctx context.Context) {
 				Message: t.ErrorMessage(),
 				At:      now,
 			})
+			s.callback.Dispatch(t)
 			s.log.Warn("task moved to dead letter", port.F("task_id", string(t.ID())))
 			continue
 		}
@@ -178,6 +184,7 @@ func (s *TaskLifecycleService) sweepTTL(ctx context.Context) {
 			Message: t.ErrorMessage(),
 			At:      now,
 		})
+		s.callback.Dispatch(t)
 		s.log.Warn("task ttl expired", port.F("task_id", string(t.ID())))
 	}
 }

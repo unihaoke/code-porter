@@ -42,9 +42,12 @@ type AckTaskUseCase struct {
 	clock     port.Clock
 	log       port.Logger
 	policy    TaskPolicy
+	callback  *CallbackDispatcher
 }
 
 // NewAckTaskUseCase 构造用例。
+//
+// callback 可为 nil（回调能力关闭，行为与改造前一致）。
 func NewAckTaskUseCase(
 	taskRepo task.TaskRepository,
 	queueRepo task.TaskQueueRepository,
@@ -53,6 +56,7 @@ func NewAckTaskUseCase(
 	clock port.Clock,
 	log port.Logger,
 	policy TaskPolicy,
+	callback *CallbackDispatcher,
 ) *AckTaskUseCase {
 	return &AckTaskUseCase{
 		taskRepo:  taskRepo,
@@ -62,6 +66,7 @@ func NewAckTaskUseCase(
 		clock:     clock,
 		log:       log.With(port.F("uc", "ack_task")),
 		policy:    policy.withDefaults(),
+		callback:  callback,
 	}
 }
 
@@ -157,6 +162,8 @@ func (u *AckTaskUseCase) Execute(ctx context.Context, cmd AckCommand) (*AckResul
 			Content: t.Result(),
 			At:      now,
 		})
+		// 终态回调（异步，不阻塞 ACK）。
+		u.callback.Dispatch(t)
 
 	default: // AckFailed
 		outcome, err := t.Fail(orDefault(cmd.Error, "task failed on agent"), now)
@@ -186,6 +193,8 @@ func (u *AckTaskUseCase) Execute(ctx context.Context, cmd AckCommand) (*AckResul
 				At:      now,
 			})
 			res.DeadLetter = t.Status() == task.StatusDeadLetter
+			// 终态回调（失败/死信，异步，不阻塞 ACK）。
+			u.callback.Dispatch(t)
 		}
 	}
 

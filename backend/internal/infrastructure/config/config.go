@@ -116,6 +116,8 @@ type TaskConfig struct {
 	RequestTimeout    time.Duration `yaml:"request_timeout"`
 	StreamIdleTimeout time.Duration `yaml:"stream_idle_timeout"`
 	MCPTimeout        time.Duration `yaml:"mcp_timeout"`
+	// CallbackTimeout 单次回调 HTTP 请求超时，<=0 时由分发器默认 10s。
+	CallbackTimeout time.Duration `yaml:"callback_timeout"`
 	// LogPrompt 是否记录完整 prompt（默认关闭，避免敏感代码外泄）。
 	LogPrompt bool `yaml:"log_prompt"`
 }

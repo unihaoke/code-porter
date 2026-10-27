@@ -30,6 +30,14 @@ type ChatCompletionRequest struct {
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	Stop        []string  `json:"stop,omitempty"`
 	User        string    `json:"user,omitempty"`
+	// CallbackURL 任务终态回调地址；为空表示同步等待，行为与标准 OpenAI 兼容。
+	CallbackURL string `json:"callback_url,omitempty"`
+	// CallbackToken 回调时放入 Authorization: Bearer <token> 的凭证。
+	CallbackToken string `json:"callback_token,omitempty"`
+	// JobID 调用方作业 ID，原样回传。
+	JobID string `json:"job_id,omitempty"`
+	// TenantID 调用方租户 ID，原样回传。
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ChatCompletionResponse 非流式响应。

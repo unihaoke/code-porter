@@ -44,7 +44,7 @@ func newBundle(t *testing.T, policy gatewayapp.TaskPolicy) *bundle {
 	if _, err := registry.AuthenticateAndRegister(context.Background(), user.SeedAdminID, "local-pc", "My PC"); err != nil {
 		t.Fatalf("register agent: %v", err)
 	}
-	ack := gatewayapp.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy)
+	ack := gatewayapp.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy, nil)
 	pull := gatewayapp.NewPullTasksUseCase(taskRepo, queueRepo, registry, clock, log, policy)
 	submit := gatewayapp.NewSubmitTaskUseCase(taskRepo, queueRepo, registry, eventBroker, nil, clock, log, policy)
 	return &bundle{registry: registry, submit: submit, pull: pull, ack: ack,

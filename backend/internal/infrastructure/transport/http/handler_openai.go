@@ -112,18 +112,22 @@ func (h *ChatCompletionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	cmd := gateway.SubmitTaskCommand{
-		OwnerID:     owner.ID(),
-		APIKeyID:    keyID,
-		AgentID:     agentIDOf(agentID),
-		Model:       m,
-		Messages:    toDomainMessages(req.Messages),
-		Operation:   operation,
-		WorkDir:     workDir,
-		Stream:      req.Stream,
-		Mode:        mode,
-		Temperature: req.Temperature,
-		MaxTokens:   derefInt(req.MaxTokens),
-		Permission:  perm,
+		OwnerID:       owner.ID(),
+		APIKeyID:      keyID,
+		AgentID:       agentIDOf(agentID),
+		Model:         m,
+		Messages:      toDomainMessages(req.Messages),
+		Operation:     operation,
+		WorkDir:       workDir,
+		Stream:        req.Stream,
+		Mode:          mode,
+		Temperature:   req.Temperature,
+		MaxTokens:     derefInt(req.MaxTokens),
+		Permission:    perm,
+		CallbackURL:   req.CallbackURL,
+		CallbackToken: req.CallbackToken,
+		JobID:         req.JobID,
+		TenantID:      req.TenantID,
 	}
 
 	result, err := h.submit.Execute(r.Context(), cmd)

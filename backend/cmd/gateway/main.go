@@ -120,7 +120,9 @@ func run(configPath string) error {
 
 	registry := gatewayapp.NewAgentRegistry(agentRepo, queueRepo, clock, log, policy)
 
-	ackUC := gatewayapp.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy)
+	callbackDispatcher := gatewayapp.NewCallbackDispatcher(nil, cfg.Task.CallbackTimeout, log)
+
+	ackUC := gatewayapp.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy, callbackDispatcher)
 	healthUC := gatewayapp.NewReportHealthUseCase(registry, clock, log, policy)
 	pullUC := gatewayapp.NewPullTasksUseCase(taskRepo, queueRepo, registry, clock, log, policy)
 
@@ -174,7 +176,9 @@ func run(configPath string) error {
 			HeartbeatSweepInterval: cfg.Lifecycle.HeartbeatSweepInterval,
 			RetentionInterval:      cfg.Lifecycle.RetentionInterval,
 			TaskRetention:          cfg.Lifecycle.TaskRetention,
-		})
+		},
+		callbackDispatcher,
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

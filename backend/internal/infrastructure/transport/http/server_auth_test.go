@@ -49,7 +49,7 @@ func newHTTPHarness(t *testing.T) *httpHarness {
 	submit := gateway.NewSubmitTaskUseCase(taskRepo, queueRepo, registry, eventBroker, hub, clock, log, policy)
 	chat := gateway.NewChatUseCase(submit, model.ClaudeCode, log)
 	pull := gateway.NewPullTasksUseCase(taskRepo, queueRepo, registry, clock, log, policy)
-	ack := gateway.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy)
+	ack := gateway.NewAckTaskUseCase(taskRepo, queueRepo, registry, eventBroker, clock, log, policy, nil)
 	health := gateway.NewReportHealthUseCase(registry, clock, log, policy)
 
 	svc := authsvc.NewService(authsvc.Deps{

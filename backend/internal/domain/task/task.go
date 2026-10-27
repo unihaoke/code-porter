@@ -56,6 +56,14 @@ type Spec struct {
 	TTL         time.Duration
 	APIKeyID    string
 	Now         time.Time
+	// CallbackURL 任务到达终态时回调调用方的地址；为空表示不回调。
+	CallbackURL string
+	// CallbackToken 回调时放入 Authorization: Bearer <token> 的凭证。
+	CallbackToken string
+	// JobID 调用方作业 ID，原样回传。
+	JobID string
+	// TenantID 调用方租户 ID，原样回传。
+	TenantID string
 }
 
 // Task 任务聚合根。所有状态变更必须通过聚合方法，保证不变式成立。
@@ -86,6 +94,14 @@ type Task struct {
 	lockTimeout time.Duration
 	// ttl 任务整体存活时长。
 	ttl time.Duration
+	// callbackURL 任务终态回调地址；为空表示不回调。
+	callbackURL string
+	// callbackToken 回调鉴权凭证。
+	callbackToken string
+	// jobID 调用方作业 ID，原样回传。
+	jobID string
+	// tenantID 调用方租户 ID，原样回传。
+	tenantID string
 }
 
 // NewTask 创建处于 pending 的任务。
@@ -119,21 +135,25 @@ func NewTask(spec Spec) (*Task, error) {
 		ttl = 10 * time.Minute
 	}
 	return &Task{
-		id:          NewID(),
-		agentID:     spec.AgentID,
-		ownerID:     spec.OwnerID,
-		model:       spec.Model,
-		request:     spec.Request,
-		mode:        spec.Mode,
-		stream:      spec.Stream,
-		status:      StatusPending,
-		maxRetry:    maxRetry,
-		createdAt:   now,
-		updatedAt:   now,
-		expiresAt:   now.Add(ttl),
-		apiKeyID:    spec.APIKeyID,
-		lockTimeout: lockTimeout,
-		ttl:         ttl,
+		id:            NewID(),
+		agentID:       spec.AgentID,
+		ownerID:       spec.OwnerID,
+		model:         spec.Model,
+		request:       spec.Request,
+		mode:          spec.Mode,
+		stream:        spec.Stream,
+		status:        StatusPending,
+		maxRetry:      maxRetry,
+		createdAt:     now,
+		updatedAt:     now,
+		expiresAt:     now.Add(ttl),
+		apiKeyID:      spec.APIKeyID,
+		lockTimeout:   lockTimeout,
+		ttl:           ttl,
+		callbackURL:   spec.CallbackURL,
+		callbackToken: spec.CallbackToken,
+		jobID:         spec.JobID,
+		tenantID:      spec.TenantID,
 	}, nil
 }
 
@@ -195,6 +215,18 @@ func (t *Task) ErrorMessage() string { return t.errMessage }
 
 // APIKeyID 发起方 API Key 标识，用于审计与限流。
 func (t *Task) APIKeyID() string { return t.apiKeyID }
+
+// CallbackURL 任务终态回调地址；为空表示不回调。
+func (t *Task) CallbackURL() string { return t.callbackURL }
+
+// CallbackToken 回调鉴权凭证（Authorization: Bearer）。
+func (t *Task) CallbackToken() string { return t.callbackToken }
+
+// JobID 调用方作业 ID，原样回传。
+func (t *Task) JobID() string { return t.jobID }
+
+// TenantID 调用方租户 ID，原样回传。
+func (t *Task) TenantID() string { return t.tenantID }
 
 // Seq 当前片段序号。
 func (t *Task) Seq() int { return t.seq }

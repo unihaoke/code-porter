@@ -42,6 +42,14 @@ type SubmitTaskCommand struct {
 	MaxTokens int
 	// Permission 本地文件操作权限上限（秘钥上限与请求头收紧后的交集）；缺省 all。
 	Permission task.Permission
+	// CallbackURL 任务终态回调地址；为空表示不回调。
+	CallbackURL string
+	// CallbackToken 回调时放入 Authorization: Bearer <token> 的凭证。
+	CallbackToken string
+	// JobID 调用方作业 ID，原样回传。
+	JobID string
+	// TenantID 调用方租户 ID，原样回传。
+	TenantID string
 }
 
 // SubmitTaskResult 提交结果。
@@ -136,17 +144,21 @@ func (u *SubmitTaskUseCase) Execute(ctx context.Context, cmd SubmitTaskCommand) 
 	}
 	req.Normalize() // 权限缺省 all，确保下发给 Agent 的值始终显式合法。
 	t, err := task.NewTask(task.Spec{
-		AgentID:     ag.ID(),
-		OwnerID:     ownerID,
-		Model:       cmd.Model,
-		Mode:        decision.Mode,
-		Stream:      cmd.Stream,
-		MaxRetry:    u.policy.MaxRetry,
-		LockTimeout: u.policy.LockTimeout,
-		TTL:         u.policy.TTL,
-		APIKeyID:    cmd.APIKeyID,
-		Now:         now,
-		Request:     req,
+		AgentID:       ag.ID(),
+		OwnerID:       ownerID,
+		Model:         cmd.Model,
+		Mode:          decision.Mode,
+		Stream:        cmd.Stream,
+		MaxRetry:      u.policy.MaxRetry,
+		LockTimeout:   u.policy.LockTimeout,
+		TTL:           u.policy.TTL,
+		APIKeyID:      cmd.APIKeyID,
+		Now:           now,
+		Request:       req,
+		CallbackURL:   cmd.CallbackURL,
+		CallbackToken: cmd.CallbackToken,
+		JobID:         cmd.JobID,
+		TenantID:      cmd.TenantID,
 	})
 	if err != nil {
 		return nil, err
