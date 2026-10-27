@@ -522,6 +522,40 @@ func extractCLIEvents(ev map[string]any, resultPath string, toolNames map[string
 			}
 		}
 	}
+	// Codex（--json）事件格式（0.164 起已不再产出 {"type":"result","result":"..."}）：
+	//   {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+	//   {"type":"item.completed","item":{"type":"reasoning","text":"..."}}
+	//   {"type":"item.completed","item":{"type":"command_execution","command":"ls"}}
+	//   {"type":"turn.completed","usage":{...}}
+	// 正文藏在 item 里而非顶层：上面的分支只认 result / message，
+	// 通用兜底也只查顶层 text —— 不解析这一层会整轮输出 0 个片段，
+	// 表现为「codex 明明执行完了，界面却一片空白/启动不了」。
+	if item, ok := ev["item"].(map[string]any); ok {
+		text, _ := item["text"].(string)
+		switch item["type"] {
+		case "agent_message", "message":
+			if text != "" {
+				segs = append(segs, cliSeg{kind: port.ChunkText, text: text})
+			}
+		case "reasoning":
+			if text != "" {
+				segs = append(segs, cliSeg{kind: port.ChunkThinking, text: text})
+			}
+		case "command_execution":
+			cmd, _ := item["command"].(string)
+			if cmd == "" {
+				cmd = text
+			}
+			if cmd != "" {
+				segs = append(segs, cliSeg{kind: port.ChunkTool, text: "🔧 " + cmd})
+			}
+		default:
+			// 未知 item 类型：只要带文本就按正文回传，避免内容丢失。
+			if text != "" {
+				segs = append(segs, cliSeg{kind: port.ChunkText, text: text})
+			}
+		}
+	}
 	if len(segs) > 0 {
 		return segs
 	}

@@ -185,6 +185,59 @@ func TestExtractCLIText(t *testing.T) {
 	}
 }
 
+// TestExtractCLIEventsCodex 覆盖 codex 0.164 起 --json 的新事件格式。
+// 正文位于 item.text 而非顶层 result：缺少这层解析会整轮解析出 0 个片段，
+// 表现为「codex 明明执行完了，界面却一片空白」。
+func TestExtractCLIEventsCodex(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+		kind port.ChunkKind
+	}{
+		{
+			name: "agent_message 正文",
+			line: `{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}`,
+			want: "OK",
+			kind: port.ChunkText,
+		},
+		{
+			name: "reasoning 思考",
+			line: `{"type":"item.completed","item":{"type":"reasoning","text":"让我想想"}}`,
+			want: "让我想想",
+			kind: port.ChunkThinking,
+		},
+		{
+			name: "command_execution 工具过程",
+			line: `{"type":"item.completed","item":{"type":"command_execution","command":"ls -l"}}`,
+			want: "ls -l",
+			kind: port.ChunkTool,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var ev map[string]any
+			if err := json.Unmarshal([]byte(c.line), &ev); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			segs := extractCLIEvents(ev, "result", nil)
+			if len(segs) == 0 {
+				t.Fatalf("extractCLIEvents 解析出 0 个片段，want 含 %q", c.want)
+			}
+			var joined string
+			for _, s := range segs {
+				joined += s.text
+				if s.kind != c.kind {
+					t.Errorf("kind = %q, want %q", s.kind, c.kind)
+				}
+			}
+			if !strings.Contains(joined, c.want) {
+				t.Errorf("text = %q, want 含 %q", joined, c.want)
+			}
+		})
+	}
+}
+
 func TestApplyCLIDefaultsClaude(t *testing.T) {
 	cfg := applyCLIDefaults(model.ClaudeCode, AdapterConfig{Enabled: true})
 	if cfg.Command != "claude" {
