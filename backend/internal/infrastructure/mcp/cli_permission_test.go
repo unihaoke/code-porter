@@ -74,8 +74,12 @@ func TestCLIPermissionCodex(t *testing.T) {
 		if !strings.Contains(got, "--sandbox\x1fread-only") {
 			t.Fatalf("codex read must use read-only sandbox, got %v", strings.Split(got, "\x1f"))
 		}
-		if !strings.Contains(got, "--ask-for-approval\x1fnever") {
+		// codex 0.164 起没有 --ask-for-approval，审批策略只能走 -c approval_policy。
+		if !strings.Contains(got, "-c\x1fapproval_policy=\"never\"") {
 			t.Fatalf("codex read must never block on approval prompts, got %v", strings.Split(got, "\x1f"))
+		}
+		if strings.Contains(got, "--ask-for-approval") {
+			t.Fatalf("codex 0.164+ rejects --ask-for-approval (unexpected argument): %v", got)
 		}
 		if strings.Contains(got, "--permission-mode") {
 			t.Fatalf("codex does not support --permission-mode: %v", got)
@@ -87,12 +91,24 @@ func TestCLIPermissionCodex(t *testing.T) {
 		if !strings.Contains(got, "--sandbox\x1fworkspace-write") {
 			t.Fatalf("codex write must use workspace-write sandbox, got %v", strings.Split(got, "\x1f"))
 		}
+		if !strings.Contains(got, "-c\x1fapproval_policy=\"never\"") {
+			t.Fatalf("codex write must never block on approval prompts, got %v", strings.Split(got, "\x1f"))
+		}
 	})
 
-	t.Run("all leaves codex defaults untouched", func(t *testing.T) {
+	t.Run("all leaves codex sandbox untouched", func(t *testing.T) {
 		got := joined(newA().buildArgs("p", task.PermissionAll))
 		if strings.Contains(got, "--sandbox") {
 			t.Fatalf("all must not inject sandbox flags: %v", got)
+		}
+		// 无人值守：即便不设沙箱，审批策略也必须关掉，否则会卡在确认提示上。
+		if !strings.Contains(got, "-c\x1fapproval_policy=\"never\"") {
+			t.Fatalf("codex all must still disable approval prompts, got %v", strings.Split(got, "\x1f"))
+		}
+		// 关键回归点：误配的 permission_mode 绝不能透传给 codex，
+		// 否则 codex 报 "unexpected argument" 直接退出，任务结果为空。
+		if strings.Contains(got, "--permission-mode") {
+			t.Fatalf("codex must never receive --permission-mode: %v", got)
 		}
 	})
 }

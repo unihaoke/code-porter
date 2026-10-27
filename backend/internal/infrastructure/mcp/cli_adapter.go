@@ -153,11 +153,18 @@ const promptPlaceholder = "{{prompt}}"
 //	acceptEdits      自动接受工作区文件编辑，其余操作仍被拒绝（write）
 //	bypassPermissions 全部放开（all，沿用 yaml 配置，默认值）
 //
-// Codex（--sandbox + --ask-for-approval）：
+// Codex（--sandbox + -c approval_policy）：
 //
-//	read-only / never       完全只读，越界操作直接拒绝而非挂起（read）
-//	workspace-write / never 仅工作区可写，越界拒绝（write）
-//	all 时不传沙箱参数，保持 codex exec 自身默认行为不变。
+//	--sandbox read-only       完全只读，越界操作直接拒绝而非挂起（read）
+//	--sandbox workspace-write 仅工作区可写，越界拒绝（write）
+//	all 时不传 --sandbox，保持 codex exec 自身默认行为不变。
+//
+// 注意：codex exec（0.164 起）既不认 --permission-mode，也没有
+// --ask-for-approval（该参数已被移除，只剩 --approve-for-me，且不能与
+// --sandbox 同时使用）。传错参数时 codex 会直接打印
+// "error: unexpected argument ..." 并以退出码 2 结束，stdout 一个事件都没有，
+// 表现为任务「执行了但结果为空」。因此 codex 一律走 --sandbox + -c
+// approval_policy="never"，绝不发 --permission-mode。
 const (
 	claudePermissionRead  = "plan"
 	claudePermissionWrite = "acceptEdits"
@@ -196,23 +203,29 @@ func (a *CLIAdapter) buildArgs(prompt string, perm task.Permission) []string {
 
 	permissionMode := a.cli.PermissionMode
 	var hardSandbox []string
-	switch perm {
-	case task.PermissionRead, task.PermissionWrite:
-		switch a.model {
-		case model.ClaudeCode, model.CodeBuddy:
-			if perm == task.PermissionRead {
-				permissionMode = claudePermissionRead
-			} else {
-				permissionMode = claudePermissionWrite
+	if a.model == model.Codex {
+		// codex 不认 --permission-mode（会直接报错退出），权限一律用
+		// --sandbox + -c approval_policy 表达；approval_policy=never 保证
+		// Agent 无人值守时不会卡在交互式确认上。
+		permissionMode = ""
+		hardSandbox = []string{"-c", "approval_policy=" + strconv.Quote(codexApprovalNever)}
+		switch perm {
+		case task.PermissionRead:
+			hardSandbox = append([]string{"--sandbox", codexSandboxRead}, hardSandbox...)
+		case task.PermissionWrite:
+			hardSandbox = append([]string{"--sandbox", codexSandboxWrite}, hardSandbox...)
+		}
+	} else {
+		switch perm {
+		case task.PermissionRead, task.PermissionWrite:
+			switch a.model {
+			case model.ClaudeCode, model.CodeBuddy:
+				if perm == task.PermissionRead {
+					permissionMode = claudePermissionRead
+				} else {
+					permissionMode = claudePermissionWrite
+				}
 			}
-		case model.Codex:
-			// codex 不认 --permission-mode，改用 sandbox 表达；沙箱参数追加在最后。
-			permissionMode = ""
-			sandbox := codexSandboxWrite
-			if perm == task.PermissionRead {
-				sandbox = codexSandboxRead
-			}
-			hardSandbox = []string{"--sandbox", sandbox, "--ask-for-approval", codexApprovalNever}
 		}
 	}
 	if permissionMode != "" {
