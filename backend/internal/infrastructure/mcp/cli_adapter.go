@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codeporter/code-porter/internal/application/port"
@@ -164,6 +165,12 @@ const (
 	codexSandboxRead   = "read-only"
 	codexSandboxWrite  = "workspace-write"
 	codexApprovalNever = "never"
+
+	// cliWaitGrace 进程退出（或上下文被取消）后，额外等待 I/O 管道关闭的宽限时间。
+	// 超时后 os/exec 会强制关闭管道。codex 这类 CLI 会再派生孙进程
+	// （node codex.js → codex.exe），孙进程继承 stdout/stderr 句柄且不退出时，
+	// 父进程侧会永远读不到 EOF，导致 Wait 永久阻塞、inflight 无法归零。
+	cliWaitGrace = 10 * time.Second
 )
 
 // buildArgs 拼装最终 argv：展开占位符并追加派生参数。
@@ -264,6 +271,9 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 	cmd.SysProcAttr = stdioSysProcAttr()
 	cmd.Dir = a.cfg.WorkDir
 	cmd.Env = environWith(a.cfg.Env)
+	// 进程退出（或上下文取消）后，若 stdout/stderr 管道仍被孙进程持有，
+	// 最多再等 cliWaitGrace 就由 os/exec 强制关闭，避免 Wait 永久阻塞。
+	cmd.WaitDelay = cliWaitGrace
 
 	var stdin io.WriteCloser
 	if a.cli.PromptViaStdin {
@@ -288,6 +298,22 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 		return nil, apperr.Wrap(apperr.CodeMCPFailure,
 			"cannot start "+a.model.String()+" cli, is it installed and in PATH?", err)
 	}
+
+	// 看门狗：上下文取消或超时到达时，终止整棵进程树。
+	// 关键是与下面的 wg.Wait() 解耦——它只监听 runCtx.Done()，不参与等待，
+	// 因此不会被「scanner 等 EOF、Wait 等 scanner」的死锁牵连。
+	// 只 kill 直接子进程是不够的：codex 的孙进程（codex.exe）会存活并
+	// 继续持有继承来的管道句柄，使读端永远读不到 EOF。
+	// finished 标记本请求是否已正常收尾（进程已退出）。
+	// 用于让看门狗区分「用户停止/超时」与「正常结束」：
+	// 正常结束时 runCtx 也会被 cancel()，但那会儿进程已经没了，不必再杀。
+	var finished atomic.Bool
+	go func() {
+		<-runCtx.Done()
+		if !finished.Load() && cmd.Process != nil {
+			_ = killProcessTree(cmd.Process.Pid)
+		}
+	}()
 
 	out := make(chan port.MCPChunk, 64)
 	var wg sync.WaitGroup
@@ -328,10 +354,19 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 		a.consume(ctx, out, stdout)
 	}()
 
+	// cmd.Wait() 必须并发启动：只有它（配合 WaitDelay）才会关闭 stdout/stderr 管道，
+	// 从而让上面两个 scanner goroutine 退出。原先把它串行放在 wg.Wait() 之后，
+	// 当孙进程（codex.exe）持有管道句柄时，scanner 等 EOF、Wait 等 scanner，
+	// 形成死锁 —— 任务停止后 out 永不关闭，pool 的 inflight 也就永远不会 -1。
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+
 	go func() {
 		defer cancel()
 		wg.Wait()
-		waitErr := cmd.Wait()
+		waitErr := <-waitDone
+		// 进程已收尾，随后 cancel() 触发看门狗时无需再杀进程树。
+		finished.Store(true)
 		// 注意：必须先把错误片段发完，再 close(out)。
 		// 反序会触发 panic: send on closed channel。
 		if waitErr != nil && runCtx.Err() == nil {
