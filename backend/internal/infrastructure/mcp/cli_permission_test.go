@@ -69,14 +69,40 @@ func TestCLIPermissionCodex(t *testing.T) {
 		})
 	}
 
+	// --no-daemon 必须出现在 exec 子命令之前，防止 codex 共享 daemon 缓存沙箱策略。
+	assertNoDaemonBeforeExec := func(t *testing.T, got string) {
+		t.Helper()
+		parts := strings.Split(got, "\x1f")
+		noDaemonIdx, execIdx := -1, -1
+		for i, p := range parts {
+			if p == "--no-daemon" {
+				noDaemonIdx = i
+			}
+			if p == "exec" {
+				execIdx = i
+			}
+		}
+		if noDaemonIdx == -1 {
+			t.Fatalf("codex must carry --no-daemon to avoid shared daemon caching sandbox policy, got %v", parts)
+		}
+		if execIdx != -1 && noDaemonIdx > execIdx {
+			t.Fatalf("--no-daemon must precede exec subcommand, got %v", parts)
+		}
+	}
+
 	t.Run("read enforces read-only sandbox", func(t *testing.T) {
 		got := joined(newA().buildArgs("p", task.PermissionRead))
+		assertNoDaemonBeforeExec(t, got)
 		if !strings.Contains(got, "--sandbox\x1fread-only") {
 			t.Fatalf("codex read must use read-only sandbox, got %v", strings.Split(got, "\x1f"))
 		}
 		// codex 0.164 起没有 --ask-for-approval，审批策略只能走 -c approval_policy。
-		if !strings.Contains(got, "-c\x1fapproval_policy=\"never\"") {
+		// 值不带引号（与 orca 的 codex-read-only-app-server-args 一致）。
+		if !strings.Contains(got, "-c\x1fapproval_policy=never") {
 			t.Fatalf("codex read must never block on approval prompts, got %v", strings.Split(got, "\x1f"))
+		}
+		if !strings.Contains(got, "--dangerously-bypass-hook-trust") {
+			t.Fatalf("codex read must bypass hook trust prompts, got %v", strings.Split(got, "\x1f"))
 		}
 		if strings.Contains(got, "--ask-for-approval") {
 			t.Fatalf("codex 0.164+ rejects --ask-for-approval (unexpected argument): %v", got)
@@ -88,22 +114,35 @@ func TestCLIPermissionCodex(t *testing.T) {
 
 	t.Run("write enforces workspace-write sandbox", func(t *testing.T) {
 		got := joined(newA().buildArgs("p", task.PermissionWrite))
+		assertNoDaemonBeforeExec(t, got)
 		if !strings.Contains(got, "--sandbox\x1fworkspace-write") {
 			t.Fatalf("codex write must use workspace-write sandbox, got %v", strings.Split(got, "\x1f"))
 		}
-		if !strings.Contains(got, "-c\x1fapproval_policy=\"never\"") {
+		if !strings.Contains(got, "-c\x1fapproval_policy=never") {
 			t.Fatalf("codex write must never block on approval prompts, got %v", strings.Split(got, "\x1f"))
+		}
+		if !strings.Contains(got, "--dangerously-bypass-hook-trust") {
+			t.Fatalf("codex write must bypass hook trust prompts, got %v", strings.Split(got, "\x1f"))
 		}
 	})
 
-	t.Run("all leaves codex sandbox untouched", func(t *testing.T) {
+	t.Run("all uses dangerously-bypass-approvals-and-sandbox", func(t *testing.T) {
 		got := joined(newA().buildArgs("p", task.PermissionAll))
-		if strings.Contains(got, "--sandbox") {
-			t.Fatalf("all must not inject sandbox flags: %v", got)
+		assertNoDaemonBeforeExec(t, got)
+		// all 对标 orca yolo 模式：用 --dangerously-bypass-approvals-and-sandbox
+		// 一次性绕过审批与沙箱，不再传 --sandbox danger-full-access。
+		if !strings.Contains(got, "--dangerously-bypass-approvals-and-sandbox") {
+			t.Fatalf("codex all must use --dangerously-bypass-approvals-and-sandbox, got %v", strings.Split(got, "\x1f"))
 		}
-		// 无人值守：即便不设沙箱，审批策略也必须关掉，否则会卡在确认提示上。
-		if !strings.Contains(got, "-c\x1fapproval_policy=\"never\"") {
-			t.Fatalf("codex all must still disable approval prompts, got %v", strings.Split(got, "\x1f"))
+		if !strings.Contains(got, "--dangerously-bypass-hook-trust") {
+			t.Fatalf("codex all must bypass hook trust prompts, got %v", strings.Split(got, "\x1f"))
+		}
+		// 全权限绕过 flag 已覆盖审批与沙箱，不应再出现 --sandbox / approval_policy。
+		if strings.Contains(got, "--sandbox") {
+			t.Fatalf("codex all must not pass --sandbox (bypass flag covers it): %v", got)
+		}
+		if strings.Contains(got, "approval_policy") {
+			t.Fatalf("codex all must not pass approval_policy (bypass flag covers it): %v", got)
 		}
 		// 关键回归点：误配的 permission_mode 绝不能透传给 codex，
 		// 否则 codex 报 "unexpected argument" 直接退出，任务结果为空。

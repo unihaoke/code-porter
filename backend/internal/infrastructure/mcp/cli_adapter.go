@@ -153,31 +153,46 @@ const promptPlaceholder = "{{prompt}}"
 //	acceptEdits      自动接受工作区文件编辑，其余操作仍被拒绝（write）
 //	bypassPermissions 全部放开（all，沿用 yaml 配置，默认值）
 //
-// Codex（--sandbox + -c approval_policy）：
+// Codex 权限参数（对标 orca 的 tui-agent-permissions 设计）：
 //
-//	--sandbox read-only       完全只读，越界操作直接拒绝而非挂起（read）
-//	--sandbox workspace-write 仅工作区可写，越界拒绝（write）
-//	all 时不传 --sandbox，保持 codex exec 自身默认行为不变。
+//	read  → --sandbox read-only            + -c approval_policy=never
+//	write → --sandbox workspace-write      + -c approval_policy=never
+//	all   → --dangerously-bypass-approvals-and-sandbox
+//
+// 其中 all 对标 orca 的 yolo 模式：用单一全局 flag 一次性绕过审批与沙箱，
+// 比 --sandbox danger-full-access + approval_policy=never 更简洁，也是
+// codex 官方推荐的无值守全权限启动方式。read/write 仍走 --sandbox 限定
+// 文件系统边界，approval_policy=never 保证无人值守时不卡交互式确认。
 //
 // 注意：codex exec（0.164 起）既不认 --permission-mode，也没有
 // --ask-for-approval（该参数已被移除，只剩 --approve-for-me，且不能与
 // --sandbox 同时使用）。传错参数时 codex 会直接打印
 // "error: unexpected argument ..." 并以退出码 2 结束，stdout 一个事件都没有，
-// 表现为任务「执行了但结果为空」。因此 codex 一律走 --sandbox + -c
-// approval_policy="never"，绝不发 --permission-mode。
+// 表现为任务「执行了但结果为空」。因此 codex 绝不发 --permission-mode。
+// -c approval_policy 的值不带引号（与 orca 的 codex-read-only-app-server-args
+// 一致），带引号会被当成字面量解析出错。
 const (
 	claudePermissionRead  = "plan"
 	claudePermissionWrite = "acceptEdits"
 
-	codexSandboxRead   = "read-only"
-	codexSandboxWrite  = "workspace-write"
+	codexSandboxRead  = "read-only"
+	codexSandboxWrite = "workspace-write"
 	codexApprovalNever = "never"
+	// codexBypassApprovalsAndSandbox 对标 orca yolo 模式的 codex 全权限 flag，
+	// 一次性绕过审批与沙箱；codex 0.164+ 的全局布尔 flag，与 exec 等子命令兼容。
+	codexBypassApprovalsAndSandbox = "--dangerously-bypass-approvals-and-sandbox"
 
 	// cliWaitGrace 进程退出（或上下文被取消）后，额外等待 I/O 管道关闭的宽限时间。
 	// 超时后 os/exec 会强制关闭管道。codex 这类 CLI 会再派生孙进程
 	// （node codex.js → codex.exe），孙进程继承 stdout/stderr 句柄且不退出时，
 	// 父进程侧会永远读不到 EOF，导致 Wait 永久阻塞、inflight 无法归零。
 	cliWaitGrace = 10 * time.Second
+
+	// cliFinalEventGrace 检测到 CLI 终态事件后，额外等待进程自行退出的宽限时间。
+	// 超时仍未退出则主动 kill 进程树。这是为了应对 codex 等 CLI 在产出全部输出后
+	// 因 notify hook 失败等原因挂起、stdout 管道不关闭导致 scanner 永久阻塞的问题。
+	// 取 3s：足够让正常进程完成收尾，又不至于让挂起的任务拖过锁超时。
+	cliFinalEventGrace = 3 * time.Second
 )
 
 // buildArgs 拼装最终 argv：展开占位符并追加派生参数。
@@ -204,16 +219,37 @@ func (a *CLIAdapter) buildArgs(prompt string, perm task.Permission) []string {
 	permissionMode := a.cli.PermissionMode
 	var hardSandbox []string
 	if a.model == model.Codex {
+		// --no-daemon：codex 0.156+ 默认会启动共享 daemon（per CODEX_HOME），
+		// 后续 exec 会复用已存在的 daemon 并继承其沙箱策略，导致「第一次请求正常、
+		// 第二次请求沙箱失控」。orca 的 codex-shell-function 给每次调用都前置
+		// --no-daemon，让每个 exec 独立运行、不共享 daemon。
+		args = append([]string{"--no-daemon"}, args...)
 		// codex 不认 --permission-mode（会直接报错退出），权限一律用
-		// --sandbox + -c approval_policy 表达；approval_policy=never 保证
-		// Agent 无人值守时不会卡在交互式确认上。
+		// --sandbox / --dangerously-bypass-approvals-and-sandbox 表达。
+		// --dangerously-bypass-hook-trust 跳过 hook 信任询问，否则首次遇到
+		// 未信任的 hook 会卡住等人工确认（无人应答 → 空白输出）。
 		permissionMode = ""
-		hardSandbox = []string{"-c", "approval_policy=" + strconv.Quote(codexApprovalNever)}
+		hardSandbox = []string{"--dangerously-bypass-hook-trust"}
 		switch perm {
 		case task.PermissionRead:
-			hardSandbox = append([]string{"--sandbox", codexSandboxRead}, hardSandbox...)
+			// 只读沙箱：越界操作直接拒绝而非挂起。
+			// approval_policy=never 保证无人值守时不卡交互式确认。
+			hardSandbox = append([]string{
+				"--sandbox", codexSandboxRead,
+				"-c", "approval_policy=" + codexApprovalNever,
+			}, hardSandbox...)
 		case task.PermissionWrite:
-			hardSandbox = append([]string{"--sandbox", codexSandboxWrite}, hardSandbox...)
+			// 工作区可写沙箱，越界拒绝。
+			hardSandbox = append([]string{
+				"--sandbox", codexSandboxWrite,
+				"-c", "approval_policy=" + codexApprovalNever,
+			}, hardSandbox...)
+		case task.PermissionAll:
+			// 完全放开：对标 orca yolo 模式，用
+			// --dangerously-bypass-approvals-and-sandbox 一次性绕过审批与沙箱，
+			// 比 --sandbox danger-full-access + approval_policy=never 更简洁，
+			// 也是 codex 官方推荐的无值守全权限启动方式。
+			hardSandbox = append([]string{codexBypassApprovalsAndSandbox}, hardSandbox...)
 		}
 	} else {
 		switch perm {
@@ -361,10 +397,38 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 	}()
 
 	// stdout：按输出格式解析。
+	// finalCh 由 consume 在检测到 CLI 终态事件时关闭，用于触发「终态后仍不退出则 kill」
+	// 的保护逻辑（应对 codex notify hook 失败导致进程挂起的情况）。
+	finalCh := make(chan struct{})
+	statCh := make(chan cliConsumeStat, 1)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.consume(ctx, out, stdout)
+		statCh <- a.consume(ctx, out, stdout, finalCh)
+	}()
+
+	// 终态守护：consume 检测到 CLI 终态事件（result / turn.completed / response.completed）
+	// 后，若进程在 cliFinalEventGrace 内仍未自行退出，则主动 kill 进程树。
+	// 这是为了应对 codex 等 CLI 产出全部输出后因 notify hook 失败等原因挂起、
+	// stdout 管道不关闭导致 scanner 永久阻塞的问题。finished 标记确保正常退出
+	// 的进程不会被误杀。
+	go func() {
+		select {
+		case <-finalCh:
+		case <-runCtx.Done():
+			return
+		}
+		timer := time.NewTimer(cliFinalEventGrace)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			if !finished.Load() && cmd.Process != nil {
+				a.log.Warn("cli did not exit after final event, killing process tree",
+					port.F("model", a.model.String()))
+				_ = killProcessTree(cmd.Process.Pid)
+			}
+		case <-runCtx.Done():
+		}
 	}()
 
 	// cmd.Wait() 必须并发启动：只有它（配合 WaitDelay）才会关闭 stdout/stderr 管道，
@@ -378,8 +442,24 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 		defer cancel()
 		wg.Wait()
 		waitErr := <-waitDone
+		stat := <-statCh
 		// 进程已收尾，随后 cancel() 触发看门狗时无需再杀进程树。
 		finished.Store(true)
+		// 「跑了但一个片段都没解析出来」是最难排查的故障（界面上就是一片空白），
+		// 这里把退出码、stderr 尾巴和最后一行原始输出全部打出来，便于定位。
+		if stat.segCount == 0 {
+			exitCode := -1
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
+			a.log.Warn("cli produced no parsable output",
+				port.F("model", a.model.String()),
+				port.F("exit_code", exitCode),
+				port.F("wait_err", waitErr),
+				port.F("stderr_tail", strings.TrimSpace(errTail.String())),
+				port.F("last_line", clipForLog(stat.lastLine, 500)),
+				port.F("args", len(args)))
+		}
 		// 注意：必须先把错误片段发完，再 close(out)。
 		// 反序会触发 panic: send on closed channel。
 		if waitErr != nil && runCtx.Err() == nil {
@@ -396,14 +476,36 @@ func (a *CLIAdapter) StreamRun(ctx context.Context, req port.MCPStreamRequest) (
 	return out, nil
 }
 
+// cliConsumeStat 一次 stdout 消费的统计，用于「跑了但解析不出内容」时自检。
+type cliConsumeStat struct {
+	segCount  int    // 产出的片段总数（含思考/工具）
+	bodyCount int    // 其中正文片段数
+	lastLine  string // 最后一行原始输出（兜底与排查用）
+}
+
 // consume 读取 stdout 并按输出格式转换为片段。
-func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdout io.Reader) {
+//
+// finalCh 为可选的终态事件通知通道：当解析到 CLI 的终态事件（claude 的
+// result、codex 的 turn.completed / response.completed）时关闭它。
+// StreamRun 收到通知后若进程在 cliFinalEventGrace 内仍未退出则主动 kill，
+// 防止 codex 等 CLI 因 notify hook 失败等原因挂起导致 scanner 永久阻塞。
+// 传 nil 表示不需要终态通知（如纯单测场景）。
+func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdout io.Reader, finalCh chan<- struct{}) cliConsumeStat {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 128*1024), 8*1024*1024)
 	// segCount 总产出片段数（含思考/工具），bodyCount 仅正文，用于终态去重与空输出兜底。
 	segCount, bodyCount := 0, 0
 	// tool_use_id → 工具名，跨事件累积，让 tool_result 能显示具体工具名。
 	toolNames := make(map[string]string)
+	// finalNotified 保证 finalCh 只关闭一次（单协程内用 bool 即可）。
+	finalNotified := false
+	notifyFinal := func() {
+		if finalNotified || finalCh == nil {
+			return
+		}
+		finalNotified = true
+		close(finalCh)
+	}
 	for sc.Scan() {
 		line := sc.Text()
 		trimmed := strings.TrimSpace(line)
@@ -421,6 +523,14 @@ func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdo
 		// 一行可能是单个 JSON 对象（--output-format json），
 		// 也可能是事件数组（stream-json / 带 --verbose 时）——两种都要能解析。
 		for _, ev := range parseJSONLine(trimmed) {
+			// 终态事件检测：
+			//   - claude: {"type":"result",...}
+			//   - codex:  {"type":"turn.completed",...} / {"type":"response.completed",...}
+			// turn.completed 本身不产出正文片段，所以不能只靠 seg.final 判断。
+			switch ev["type"] {
+			case "result", "turn.completed", "response.completed":
+				notifyFinal()
+			}
 			for _, seg := range extractCLIEvents(ev, a.cli.ResultPath, toolNames) {
 				if seg.text == "" {
 					continue
@@ -435,6 +545,9 @@ func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdo
 				if seg.kind.IsBody() {
 					bodyCount++
 				}
+				if seg.final {
+					notifyFinal()
+				}
 			}
 		}
 	}
@@ -445,6 +558,7 @@ func (a *CLIAdapter) consume(ctx context.Context, out chan<- port.MCPChunk, stdo
 			emit(ctx, out, port.MCPChunk{Content: raw})
 		}
 	}
+	return cliConsumeStat{segCount: segCount, bodyCount: bodyCount, lastLine: sc.Text()}
 }
 
 // parseJSONLine 解析一行 JSON，返回其中的事件对象列表。
@@ -662,6 +776,14 @@ func emit(ctx context.Context, out chan<- port.MCPChunk, c port.MCPChunk) {
 	case out <- c:
 	case <-ctx.Done():
 	}
+}
+
+// clipForLog 截断过长的日志字段，避免一行日志刷屏。
+func clipForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 // appendTail 维护stderr 尾部若干行。

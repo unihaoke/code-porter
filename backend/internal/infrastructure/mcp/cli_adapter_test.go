@@ -312,7 +312,7 @@ func TestConsumeFinalDedup(t *testing.T) {
 	collect := func(outputFormat, input string) []port.MCPChunk {
 		a := newTestCLIAdapter(t, CLIConfig{Args: []string{"-p", "x"}, OutputFormat: outputFormat})
 		out := make(chan port.MCPChunk, 16)
-		a.consume(context.Background(), out, strings.NewReader(input))
+		a.consume(context.Background(), out, strings.NewReader(input), nil)
 		close(out)
 		var got []port.MCPChunk
 		for c := range out {

@@ -140,6 +140,15 @@ func (u *AckTaskUseCase) Execute(ctx context.Context, cmd AckCommand) (*AckResul
 	switch cmd.Status {
 	case port.AckProgress:
 		// 仅上报片段，任务继续运行。
+		// 续锁：Agent 正在积极上报进度，说明任务仍在执行，不应被锁超时误杀。
+		// 长任务（如 codex 多轮工具调用）可能远超 60s，每次 AckProgress 都把
+		// lockedUntil 推后一个 lock_timeout，只有真正卡死（长时间不上报）才会超时。
+		if cmd.LockToken != "" {
+			if rerr := t.RenewLock(cmd.LockToken, u.policy.LockTimeout, now); rerr != nil {
+				u.log.Warn("renew lock on progress failed",
+					port.F("task_id", cmd.TaskID), port.F("err", rerr.Error()))
+			}
+		}
 		if err := u.taskRepo.Save(ctx, t); err != nil {
 			return nil, err
 		}
